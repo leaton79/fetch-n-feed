@@ -3,6 +3,7 @@
 import { defaultAppData } from './types.js';
 
 const DATA_FILE_NAME = 'fetch-n-feed-data.json';
+const STORAGE_KEY = 'fetch-n-feed-data';
 
 // Generate a unique ID
 export function generateId() {
@@ -17,60 +18,13 @@ export function now() {
 // In-memory data store
 let appData = { ...defaultAppData };
 
-// Check if we're running in Tauri (desktop) or browser
-function isTauri() {
-  return typeof window !== 'undefined' && '__TAURI__' in window;
-}
-
-// Get the path to the data file
-async function getDataFilePath() {
-  if (!isTauri()) {
-    return DATA_FILE_NAME;
-  }
-  
-  const tauri = window.__TAURI__;
-  
-  // Check if user has set a custom sync folder
-  if (appData.preferences.syncFolderPath) {
-    return `${appData.preferences.syncFolderPath}/${DATA_FILE_NAME}`;
-  }
-  
-  // Default to app data directory
-  const appDataDir = await tauri.path.appDataDir();
-  return `${appDataDir}${DATA_FILE_NAME}`;
-}
-
-// Save data to file
+// Save data to localStorage
 export async function saveData() {
   appData.lastSyncedAt = now();
   
-  if (!isTauri()) {
-    // Browser fallback: use localStorage
-    try {
-      localStorage.setItem(DATA_FILE_NAME, JSON.stringify(appData, null, 2));
-      console.log('Data saved to localStorage');
-      return true;
-    } catch (error) {
-      console.error('Failed to save to localStorage:', error);
-      return false;
-    }
-  }
-  
   try {
-    const tauri = window.__TAURI__;
-    const filePath = await getDataFilePath();
-    
-    // Ensure directory exists
-    const dir = filePath.substring(0, filePath.lastIndexOf('/'));
-    try {
-      await tauri.fs.mkdir(dir, { recursive: true });
-    } catch {
-      // Directory might already exist, that's fine
-    }
-    
-    // Write the file
-    await tauri.fs.writeTextFile(filePath, JSON.stringify(appData, null, 2));
-    console.log('Data saved to:', filePath);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+    console.log('Data saved successfully');
     return true;
   } catch (error) {
     console.error('Failed to save data:', error);
@@ -78,32 +32,25 @@ export async function saveData() {
   }
 }
 
-// Load data from file
+// Load data from localStorage
 export async function loadData() {
-  if (!isTauri()) {
-    // Browser fallback: use localStorage
-    try {
-      const stored = localStorage.getItem(DATA_FILE_NAME);
-      if (stored) {
-        appData = JSON.parse(stored);
-        console.log('Data loaded from localStorage');
-      }
-    } catch (error) {
-      console.error('Failed to load from localStorage:', error);
-    }
-    return appData;
-  }
-  
   try {
-    const tauri = window.__TAURI__;
-    const filePath = await getDataFilePath();
-    
-    const content = await tauri.fs.readTextFile(filePath);
-    appData = JSON.parse(content);
-    console.log('Data loaded from:', filePath);
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      // Merge with defaults to ensure all fields exist
+      appData = { 
+        ...defaultAppData, 
+        ...parsed,
+        preferences: { ...defaultAppData.preferences, ...parsed.preferences }
+      };
+      console.log('Data loaded successfully:', appData.feeds.length, 'feeds,', appData.articles.length, 'articles');
+    } else {
+      console.log('No existing data, using defaults');
+      appData = { ...defaultAppData };
+    }
   } catch (error) {
-    // File doesn't exist yet, use defaults
-    console.log('No existing data file, using defaults');
+    console.error('Failed to load data:', error);
     appData = { ...defaultAppData };
   }
   
@@ -121,7 +68,7 @@ export async function updateData(updates) {
   await saveData();
 }
 
-// Set the sync folder path
+// Set the sync folder path (for future Google Drive sync)
 export async function setSyncFolder(folderPath) {
   appData.preferences.syncFolderPath = folderPath;
   await saveData();
@@ -145,4 +92,11 @@ export async function importData(jsonString) {
   } catch {
     return false;
   }
+}
+
+// Clear all data (for testing)
+export async function clearData() {
+  appData = { ...defaultAppData };
+  localStorage.removeItem(STORAGE_KEY);
+  console.log('Data cleared');
 }

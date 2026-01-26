@@ -1,5 +1,5 @@
 // feedManager.js - Manage feeds and articles
-
+import { fetchFeed } from './rssParser.js';
 import { getData, updateData, generateId, now } from './database.js';
 
 // ============ FEEDS ============
@@ -281,4 +281,70 @@ export async function cleanupOldArticles() {
   }
   
   return originalCount - newArticles.length;
+}
+// ============ REFRESH ============
+
+export async function refreshFeed(feedId) {
+  const data = getData();
+  const feed = data.feeds.find(f => f.id === feedId);
+  
+  if (!feed) {
+    return { success: false, error: 'Feed not found' };
+  }
+  
+  const result = await fetchFeed(feed.url);
+  
+  if (!result.success) {
+    // Update error count
+    await updateFeed(feedId, { 
+      errorCount: feed.errorCount + 1,
+      lastFetchedAt: now()
+    });
+    return { success: false, error: result.error };
+  }
+  
+  // Update feed metadata
+  await updateFeed(feedId, {
+    title: feed.title === feed.url ? result.feed.title : feed.title,
+    siteUrl: result.feed.siteUrl,
+    description: result.feed.description,
+    lastFetchedAt: now(),
+    errorCount: 0,
+  });
+  
+  // Get existing article URLs for this feed to avoid duplicates
+  const existingUrls = new Set(
+    data.articles.filter(a => a.feedId === feedId).map(a => a.url)
+  );
+  
+  // Add new articles
+  let newCount = 0;
+  for (const item of result.feed.items) {
+    if (!existingUrls.has(item.url)) {
+      await addArticle({
+        feedId: feedId,
+        title: item.title,
+        url: item.url,
+        author: item.author,
+        summary: item.summary,
+        content: item.content,
+        publishedAt: item.publishedAt,
+      });
+      newCount++;
+    }
+  }
+  
+  return { success: true, newArticles: newCount, totalItems: result.feed.items.length };
+}
+
+export async function refreshAllFeeds() {
+  const feeds = getAllFeeds().filter(f => f.isEnabled);
+  const results = [];
+  
+  for (const feed of feeds) {
+    const result = await refreshFeed(feed.id);
+    results.push({ feedId: feed.id, title: feed.title, ...result });
+  }
+  
+  return results;
 }

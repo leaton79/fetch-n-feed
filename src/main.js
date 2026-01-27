@@ -3,8 +3,11 @@
 import { loadData, getData, exportData } from './database.js';
 import { addFeed, getAllFeeds, getAllArticles, getArticlesByFeed, deleteFeed, markArticleRead, refreshFeed, refreshAllFeeds } from './feedManager.js';
 
+
 let currentFeedId = null;
-let currentSort = 'newest'; // newest, oldest, feedAZ, feedZA, random
+let currentSort = 'newest';
+let selectedArticle = null;
+let isLoadingArticle = false; // newest, oldest, feedAZ, feedZA, random
 // Generate a consistent color for each feed
 function getFeedColor(feedId) {
   const colors = ['#007aff', '#34c759', '#ff9500', '#ff3b30', '#af52de', '#5856d6', '#00c7be', '#ff2d55'];
@@ -34,7 +37,34 @@ function truncate(text, maxLength) {
   if (clean.length <= maxLength) return clean;
   return clean.substring(0, maxLength).trim() + '...';
 }
-
+// Format article content for display
+function formatArticleContent(content) {
+  if (!content) return '<p>No content available.</p>';
+  
+  // If content already looks like HTML, sanitize and return
+  if (content.includes('<p>') || content.includes('<div>')) {
+    return content;
+  }
+  
+  // Convert plain text/markdown-style content to HTML
+  return content
+    .split('\n\n')
+    .map(para => {
+      para = para.trim();
+      if (!para) return '';
+      if (para.startsWith('## ')) {
+        return `<h2 style="font-size: 20px; font-weight: 600; margin: 24px 0 12px 0;">${para.substring(3)}</h2>`;
+      }
+      if (para.startsWith('> ')) {
+        return `<blockquote style="border-left: 3px solid #ddd; padding-left: 16px; margin: 16px 0; color: #555; font-style: italic;">${para.substring(2)}</blockquote>`;
+      }
+      if (para.startsWith('• ')) {
+        return `<ul style="margin: 8px 0; padding-left: 20px;"><li>${para.substring(2)}</li></ul>`;
+      }
+      return `<p style="margin: 0 0 16px 0;">${para}</p>`;
+    })
+    .join('');
+}
 // Sort articles based on current sort mode
 function sortArticles(articles, feeds) {
   const sorted = [...articles];
@@ -123,35 +153,81 @@ function renderApp() {
       </div>
       
       <!-- Main Content -->
-      <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #fafafa;">
+      <div style="flex: 1; display: flex; overflow: hidden;">
         
-        <!-- Header Bar -->
-        <div style="padding: 12px 20px; background: #ffffff; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
-          <div id="status-bar" style="font-size: 14px; color: #666;"></div>
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <label style="font-size: 13px; color: #666;">Sort:</label>
-            <select id="sort-select" style="padding: 6px 10px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; background: white; cursor: pointer;">
-              <option value="newest" ${currentSort === 'newest' ? 'selected' : ''}>Newest First</option>
-              <option value="oldest" ${currentSort === 'oldest' ? 'selected' : ''}>Oldest First</option>
-              <option value="feedAZ" ${currentSort === 'feedAZ' ? 'selected' : ''}>By Feed (A→Z)</option>
-              <option value="feedZA" ${currentSort === 'feedZA' ? 'selected' : ''}>By Feed (Z→A)</option>
-              <option value="random" ${currentSort === 'random' ? 'selected' : ''}>Random</option>
-            </select>
+        <!-- Articles List Panel -->
+        <div style="width: ${selectedArticle ? '350px' : '100%'}; display: flex; flex-direction: column; overflow: hidden; background: #fafafa; border-right: ${selectedArticle ? '1px solid #e0e0e0' : 'none'}; transition: width 0.2s;">
+          
+          <!-- Header Bar -->
+          <div style="padding: 12px 16px; background: #ffffff; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
+            <div id="status-bar" style="font-size: 14px; color: #666;"></div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <label style="font-size: 12px; color: #666;">Sort:</label>
+              <select id="sort-select" style="padding: 4px 8px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; background: white; cursor: pointer;">
+                <option value="newest" ${currentSort === 'newest' ? 'selected' : ''}>Newest</option>
+                <option value="oldest" ${currentSort === 'oldest' ? 'selected' : ''}>Oldest</option>
+                <option value="feedAZ" ${currentSort === 'feedAZ' ? 'selected' : ''}>Feed A→Z</option>
+                <option value="feedZA" ${currentSort === 'feedZA' ? 'selected' : ''}>Feed Z→A</option>
+                <option value="random" ${currentSort === 'random' ? 'selected' : ''}>Random</option>
+              </select>
+            </div>
           </div>
+          
+          <!-- Articles List -->
+          <div id="articles-list" style="flex: 1; overflow-y: auto; padding: 12px;"></div>
         </div>
         
-        <!-- Articles List -->
-        <div id="articles-list" style="flex: 1; overflow-y: auto; padding: 20px;"></div>
+        <!-- Reading Pane -->
+        ${selectedArticle ? `
+        <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #ffffff;">
+          
+         <!-- Reading Pane Header -->
+          <div style="padding: 12px 20px; background: #f8f8f8; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
+            <button id="btn-close-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #e8e8e8; border: none; border-radius: 4px;">
+              ← Back
+            </button>
+            <div style="display: flex; gap: 8px;">
+              <button id="btn-share-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #34c759; color: white; border: none; border-radius: 4px;">
+                📋 Share
+              </button>
+              <button id="btn-open-external" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #007aff; color: white; border: none; border-radius: 4px;">
+                Open in Browser ↗
+              </button>
+            </div>
+          </div>
+          
+          <!-- Article Content -->
+          <div id="article-content" style="flex: 1; overflow-y: auto; padding: 24px 32px; max-width: 800px;">
+            ${isLoadingArticle ? `
+              <div style="text-align: center; padding: 40px; color: #666;">
+                <p style="font-size: 16px;">Loading full article...</p>
+              </div>
+            ` : `
+              <h1 style="font-size: 28px; font-weight: 600; line-height: 1.3; margin: 0 0 16px 0; color: #1a1a1a;">
+                ${stripHtml(selectedArticle.title)}
+              </h1>
+              <div style="font-size: 14px; color: #666; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #eee;">
+                ${selectedArticle.author ? `<span>${stripHtml(selectedArticle.author)}</span> • ` : ''}
+                ${selectedArticle.publishedAt ? new Date(selectedArticle.publishedAt).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : ''}
+              </div>
+              <div style="font-size: 16px; line-height: 1.7; color: #333;">
+                ${formatArticleContent(selectedArticle.content || selectedArticle.summary || 'No content available.')}
+              </div>
+            `}
+          </div>
+        </div>
+        ` : ''}
       </div>
       
     </div>
   `;
   
-  document.getElementById('btn-add-feed').addEventListener('click', handleAddFeed);
+ document.getElementById('btn-add-feed').addEventListener('click', handleAddFeed);
   document.getElementById('btn-refresh-all').addEventListener('click', handleRefreshAll);
   document.getElementById('btn-all-articles').addEventListener('click', (e) => {
     e.preventDefault();
     currentFeedId = null;
+    selectedArticle = null;
     renderApp();
   });
   document.getElementById('sort-select').addEventListener('change', (e) => {
@@ -159,6 +235,41 @@ function renderApp() {
     renderArticles();
   });
   
+  // Reading pane buttons
+  const closeBtn = document.getElementById('btn-close-article');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      selectedArticle = null;
+      renderApp();
+    });
+  }
+  
+  const openExternalBtn = document.getElementById('btn-open-external');
+  if (openExternalBtn) {
+    openExternalBtn.addEventListener('click', () => {
+      if (selectedArticle) {
+        window.open(selectedArticle.url, '_blank');
+      }
+    });
+  }
+  
+  const shareBtn = document.getElementById('btn-share-article');
+  if (shareBtn) {
+    shareBtn.addEventListener('click', async () => {
+      if (selectedArticle) {
+        const shareText = `${stripHtml(selectedArticle.title)}\n${selectedArticle.url}`;
+        try {
+          await navigator.clipboard.writeText(shareText);
+          shareBtn.textContent = '✓ Copied!';
+          setTimeout(() => {
+            shareBtn.textContent = '📋 Share';
+          }, 2000);
+        } catch (err) {
+          console.error('Failed to copy:', err);
+        }
+      }
+    });
+  }
   renderFeedsList();
   renderArticles();
 }
@@ -284,14 +395,14 @@ function renderArticles() {
   
   container.innerHTML = html;
   
-  document.querySelectorAll('.article-card').forEach(card => {
+    document.querySelectorAll('.article-card').forEach(card => {
     card.addEventListener('click', async (e) => {
       const articleId = e.currentTarget.dataset.articleId;
       const article = articles.find(a => a.id === articleId);
       if (article) {
         await markArticleRead(articleId);
-        window.open(article.url, '_blank');
-        renderArticles();
+        selectedArticle = article;
+        renderApp();
       }
     });
   });

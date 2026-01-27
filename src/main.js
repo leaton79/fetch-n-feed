@@ -20,6 +20,7 @@ let notesSort = 'newest'; // newest, oldest, publication, tag
 let notesTagFilter = null;
 let selectedNotes = new Set();
 let editingNote = null;
+let searchQuery = '';
 
 // Extract full article content from a URL
 async function extractArticle(url) {
@@ -500,6 +501,11 @@ function renderApp() {
               <button id="btn-mark-all-read" style="padding: 4px 8px; font-size: 11px; cursor: pointer; background: #e8e8e8; color: #555; border: none; border-radius: 4px; white-space: nowrap;">
                 ✓ Mark All Read
               </button>
+              <div style="position: relative;">
+                <input type="text" id="search-input" placeholder="🔍 Search articles..." value="${searchQuery}" 
+                  style="padding: 6px 12px; padding-right: 28px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; width: 180px; outline: none;">
+                ${searchQuery ? `<button id="btn-clear-search" style="position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 14px; color: #999; padding: 0;">×</button>` : ''}
+              </div>
             </div>
             <div style="display: flex; align-items: center; gap: 12px;">
               <div style="display: flex; align-items: center; gap: 4px;">
@@ -705,7 +711,27 @@ function renderApp() {
   document.getElementById('fetch-age-select').addEventListener('change', () => {
     renderArticles();
   });
+  document.getElementById('search-input').addEventListener('input', (e) => {
+    searchQuery = e.target.value;
+    renderArticles();
+  });
   
+  document.getElementById('search-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      searchQuery = '';
+      e.target.value = '';
+      renderArticles();
+    }
+  });
+  
+  const clearSearchBtn = document.getElementById('btn-clear-search');
+  if (clearSearchBtn) {
+    clearSearchBtn.addEventListener('click', () => {
+      searchQuery = '';
+      document.getElementById('search-input').value = '';
+      renderArticles();
+    });
+  }
   document.getElementById('btn-mark-all-read').addEventListener('click', async () => {
     const feeds = getAllFeeds();
     const allArticlesRaw = getData().articles;
@@ -1139,6 +1165,25 @@ function renderArticles() {
     cutoffDate.setDate(cutoffDate.getDate() - maxAgeDays);
     const cutoffString = cutoffDate.toISOString();
     articles = articles.filter(a => (a.publishedAt || a.fetchedAt) >= cutoffString);
+  }
+  
+  // Apply search filter
+  if (searchQuery && searchQuery.trim()) {
+    const query = searchQuery.toLowerCase().trim();
+    articles = articles.filter(a => {
+      const title = (a.title || '').toLowerCase();
+      const summary = (a.summary || '').toLowerCase();
+      const content = (a.content || '').toLowerCase();
+      const author = (a.author || '').toLowerCase();
+      const feed = feeds.find(f => f.id === a.feedId);
+      const feedTitle = (feed?.title || '').toLowerCase();
+      
+      return title.includes(query) || 
+             summary.includes(query) || 
+             content.includes(query) || 
+             author.includes(query) ||
+             feedTitle.includes(query);
+    });
   }
   
   articles = sortArticles(articles, feeds);

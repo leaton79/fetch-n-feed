@@ -11,6 +11,52 @@ let isLoadingArticle = false;
 let sidebarWidth = 260;
 let articleListWidth = 350;
 let articleFontSize = 16; // newest, oldest, feedAZ, feedZA, random
+
+// Extract full article content from a URL
+async function extractArticle(url) {
+  try {
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+    const response = await fetch(proxyUrl);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    
+    const html = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    
+    // Remove unwanted elements
+    const removeSelectors = ['script', 'style', 'nav', 'header', 'footer', 'aside', '.sidebar', '.comments', '.ad', '.advertisement'];
+    removeSelectors.forEach(sel => doc.querySelectorAll(sel).forEach(el => el.remove()));
+    
+    // Find main content
+    const contentSelectors = ['article', '[role="main"]', 'main', '.post-content', '.article-content', '.entry-content', '.content', '.post-body'];
+    let contentEl = null;
+    for (const sel of contentSelectors) {
+      contentEl = doc.querySelector(sel);
+      if (contentEl && contentEl.textContent.trim().length > 200) break;
+    }
+    if (!contentEl) contentEl = doc.body;
+    
+    // Extract paragraphs
+    const blocks = contentEl.querySelectorAll('p, h1, h2, h3, h4, li, blockquote');
+    let content = '';
+    blocks.forEach(block => {
+      const text = block.textContent.trim();
+      if (text.length > 20) {
+        const tag = block.tagName.toLowerCase();
+        if (tag.startsWith('h')) content += `\n\n## ${text}\n\n`;
+        else if (tag === 'blockquote') content += `\n> ${text}\n`;
+        else if (tag === 'li') content += `• ${text}\n`;
+        else content += `${text}\n\n`;
+      }
+    });
+    
+    return { success: true, content: content.trim() || contentEl.textContent.trim().substring(0, 10000) };
+  } catch (error) {
+    console.error('Extract failed:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 // Generate a consistent color for each feed
 function getFeedColor(feedId) {
   const colors = ['#007aff', '#34c759', '#ff9500', '#ff3b30', '#af52de', '#5856d6', '#00c7be', '#ff2d55'];
@@ -469,14 +515,42 @@ function renderArticles() {
   
   container.innerHTML = html;
   
-    document.querySelectorAll('.article-card').forEach(card => {
+document.querySelectorAll('.article-card').forEach(card => {
     card.addEventListener('click', async (e) => {
       const articleId = e.currentTarget.dataset.articleId;
       const article = articles.find(a => a.id === articleId);
       if (article) {
         await markArticleRead(articleId);
         selectedArticle = article;
+        isLoadingArticle = true;
         renderApp();
+        
+       // Try to extract full content if we only have a summary
+        const textContent = stripHtml(article.content || '');
+        const isTruncated = textContent.includes('Read the full story') || 
+                           textContent.includes('Continue reading') ||
+                           textContent.includes('Read more') ||
+                           textContent.length < 500;
+        console.log('Article text length:', textContent.length, 'Truncated:', isTruncated);
+        if (!article.content || isTruncated) {
+          console.log('Extracting full content from:', article.url);
+          const result = await extractArticle(article.url);
+          console.log('Extraction result:', result);
+          if (result.success && result.content) {
+            selectedArticle = { ...article, content: result.content };
+          }
+        }
+        
+        isLoadingArticle = false;
+        renderApp();
+        
+        // Fix image sizes after render
+        document.querySelectorAll('#article-text img').forEach(img => {
+          img.style.maxWidth = '100%';
+          img.style.height = 'auto';
+          img.style.borderRadius = '8px';
+          img.style.margin = '16px 0';
+        });
       }
     });
   });

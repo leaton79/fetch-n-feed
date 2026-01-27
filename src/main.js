@@ -21,6 +21,8 @@ let notesTagFilter = null;
 let selectedNotes = new Set();
 let editingNote = null;
 let searchQuery = '';
+let notesSearchQuery = '';
+let fetchAgeDays = 7;
 
 // Extract full article content from a URL
 async function extractArticle(url) {
@@ -313,7 +315,43 @@ function truncate(text, maxLength) {
   if (clean.length <= maxLength) return clean;
   return clean.substring(0, maxLength).trim() + '...';
 }
-
+function applyHighlight(html, highlightText) {
+  // First try exact match (works when no HTML tags break up the text)
+  const escaped = highlightText
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/ /g, '\\s+');
+  
+  try {
+    const exactRegex = new RegExp(`(${escaped})`, 'gi');
+    if (exactRegex.test(html)) {
+      return html.replace(exactRegex, `<mark style="background: #fff59d; padding: 2px 0; border-radius: 2px;" title="Note saved">$1</mark>`);
+    }
+  } catch (e) { }
+  
+  // If exact match fails, build a regex that allows HTML tags between words
+  const words = highlightText
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(w => w.length > 0)
+    .map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  
+  if (words.length === 0) return html;
+  
+  // Allow HTML tags and whitespace between words
+  const flexiblePattern = words.join('(?:<[^>]*>|\\s)*');
+  
+  try {
+    const flexRegex = new RegExp(`(${flexiblePattern})`, 'gi');
+    return html.replace(flexRegex, `<mark style="background: #fff59d; padding: 2px 0; border-radius: 2px;" title="Note saved">$1</mark>`);
+  } catch (e) {
+    console.log('Flexible highlight failed:', e);
+  }
+  
+  return html;
+}
 function formatArticleContent(content, articleId = null) {
   if (!content) return '<p>No content available.</p>';
   
@@ -347,16 +385,15 @@ function formatArticleContent(content, articleId = null) {
       .join('');
   }
   
-  // Apply saved highlights from notes
+// Apply saved highlights from notes
   if (articleId) {
-    const notes = getAllNotes().filter(n => n.articleId === articleId && n.highlightedText);
+    const allNotes = getAllNotes();
+    const notes = allNotes.filter(n => n.articleId === articleId && n.highlightedText);
+    
     for (const note of notes) {
       const highlightText = note.highlightedText;
       if (highlightText && highlightText.length > 3) {
-        // Escape special regex characters
-        const escaped = highlightText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const regex = new RegExp(`(${escaped})`, 'gi');
-        formatted = formatted.replace(regex, `<mark style="background: #fff59d; padding: 2px 0; border-radius: 2px;" title="Note saved">$1</mark>`);
+        formatted = applyHighlight(formatted, highlightText);
       }
     }
   }
@@ -420,11 +457,11 @@ function renderApp() {
             ↻ Refresh
           </button>
           <select id="fetch-age-select" style="padding: 8px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 6px; background: white; cursor: pointer;">
-            <option value="1">24 hours</option>
-            <option value="7" selected>7 days</option>
-            <option value="14">2 weeks</option>
-            <option value="30">1 month</option>
-            <option value="90">3 months</option>
+            <option value="1" ${fetchAgeDays === 1 ? 'selected' : ''}>24 hours</option>
+            <option value="7" ${fetchAgeDays === 7 ? 'selected' : ''}>7 days</option>
+            <option value="14" ${fetchAgeDays === 14 ? 'selected' : ''}>2 weeks</option>
+            <option value="30" ${fetchAgeDays === 30 ? 'selected' : ''}>1 month</option>
+            <option value="90" ${fetchAgeDays === 90 ? 'selected' : ''}>3 months</option>
           </select>
         </div>
         
@@ -708,7 +745,8 @@ function renderApp() {
     selectedArticle = null;
     renderApp();
   });
-  document.getElementById('fetch-age-select').addEventListener('change', () => {
+  document.getElementById('fetch-age-select').addEventListener('change', (e) => {
+    fetchAgeDays = parseInt(e.target.value) || 7;
     renderArticles();
   });
   document.getElementById('search-input').addEventListener('input', (e) => {
@@ -1398,6 +1436,24 @@ function renderNotesView() {
     notes = notes.filter(n => n.tags.includes(notesTagFilter));
   }
   
+  // Apply search filter
+  if (notesSearchQuery && notesSearchQuery.trim()) {
+    const query = notesSearchQuery.toLowerCase().trim();
+    notes = notes.filter(n => {
+      const highlight = (n.highlightedText || '').toLowerCase();
+      const annotation = (n.annotation || '').toLowerCase();
+      const title = (n.articleTitle || '').toLowerCase();
+      const feedTitle = (n.feedTitle || '').toLowerCase();
+      const tags = (n.tags || []).join(' ').toLowerCase();
+      
+      return highlight.includes(query) || 
+             annotation.includes(query) || 
+             title.includes(query) || 
+             feedTitle.includes(query) ||
+             tags.includes(query);
+    });
+  }
+  
   // Sort notes
   switch (notesSort) {
     case 'oldest':
@@ -1430,6 +1486,11 @@ function renderNotesView() {
     <!-- Notes Controls -->
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding: 12px; background: white; border-radius: 8px; border: 1px solid #e8e8e8;">
       <div style="display: flex; align-items: center; gap: 12px;">
+        <div style="position: relative;">
+          <input type="text" id="notes-search-input" placeholder="🔍 Search notes..." value="${notesSearchQuery}" 
+            style="padding: 6px 12px; padding-right: 28px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; width: 150px; outline: none;">
+          ${notesSearchQuery ? `<button id="btn-clear-notes-search" style="position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 14px; color: #999; padding: 0;">×</button>` : ''}
+        </div>
         <label style="font-size: 12px; color: #666;">Sort:</label>
         <select id="notes-sort-select" style="padding: 4px 8px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; background: white;">
           <option value="newest" ${notesSort === 'newest' ? 'selected' : ''}>Newest</option>
@@ -1477,6 +1538,7 @@ function renderNotesView() {
             </div>
           </div>
           <div style="display: flex; gap: 4px;">
+            <button class="btn-view-article" data-article-id="${note.articleId}" style="background: none; border: none; cursor: pointer; font-size: 14px; padding: 4px 8px;" title="View article">📄</button>
             <button class="btn-copy-note" data-note-id="${note.id}" style="background: none; border: none; cursor: pointer; font-size: 14px; padding: 4px 8px;" title="Copy to clipboard">📋</button>
             <button class="btn-edit-note" data-note-id="${note.id}" style="background: none; border: none; cursor: pointer; font-size: 14px; padding: 4px 8px;" title="Edit">✏️</button>
             <button class="btn-export-note" data-note-id="${note.id}" style="background: none; border: none; cursor: pointer; font-size: 14px; padding: 4px 8px;" title="Export">📤</button>
@@ -1514,6 +1576,33 @@ function renderNotesView() {
   container.innerHTML = html;
   
   // Event listeners
+  const notesSearchInput = document.getElementById('notes-search-input');
+  notesSearchInput.addEventListener('input', (e) => {
+    notesSearchQuery = e.target.value;
+    const cursorPos = e.target.selectionStart;
+    renderNotesView();
+    // Restore focus and cursor position
+    const newInput = document.getElementById('notes-search-input');
+    newInput.focus();
+    newInput.setSelectionRange(cursorPos, cursorPos);
+  });
+  
+  document.getElementById('notes-search-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      notesSearchQuery = '';
+      e.target.value = '';
+      renderNotesView();
+    }
+  });
+  
+  const clearNotesSearchBtn = document.getElementById('btn-clear-notes-search');
+  if (clearNotesSearchBtn) {
+    clearNotesSearchBtn.addEventListener('click', () => {
+      notesSearchQuery = '';
+      renderNotesView();
+    });
+  }
+  
   document.getElementById('notes-sort-select').addEventListener('change', (e) => {
     notesSort = e.target.value;
     renderNotesView();
@@ -1574,7 +1663,22 @@ function renderNotesView() {
       if (note) downloadNotesAsText([note]);
     });
   });
-  
+  document.querySelectorAll('.btn-view-article').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const articleId = btn.dataset.articleId;
+      const article = getData().articles.find(a => a.id === articleId);
+      if (article) {
+        showNotesView = false;
+        currentFeedId = null;
+        currentFolderId = null;
+        selectedArticle = article;
+        await markArticleRead(article.id);
+        renderApp();
+      } else {
+        alert('Article no longer exists');
+      }
+    });
+  });
   document.querySelectorAll('.btn-copy-note').forEach(btn => {
     btn.addEventListener('click', async () => {
       const noteId = btn.dataset.noteId;

@@ -743,7 +743,7 @@ function renderApp() {
   document.getElementById('layout-select').addEventListener('change', (e) => {
     currentLayout = e.target.value;
     selectedArticle = null;
-    renderApp();
+    renderArticles();
   });
   document.getElementById('fetch-age-select').addEventListener('change', (e) => {
     fetchAgeDays = parseInt(e.target.value) || 7;
@@ -1240,11 +1240,15 @@ function renderArticles() {
     return;
   }
   
+  // Limit articles for performance (render max 100)
+  const maxArticles = 100;
+  const limitedArticles = articles.slice(0, maxArticles);
+  
   switch (currentLayout) {
-    case 'grid': renderGridLayout(container, articles, feeds); break;
-    case 'magazine': renderMagazineLayout(container, articles, feeds); break;
-    case 'inline': renderInlineLayout(container, articles, feeds); break;
-    default: renderListLayout(container, articles, feeds);
+    case 'grid': renderGridLayout(container, limitedArticles, feeds); break;
+    case 'magazine': renderMagazineLayout(container, limitedArticles, feeds); break;
+    case 'inline': renderInlineLayout(container, limitedArticles, feeds); break;
+    default: renderListLayout(container, limitedArticles, feeds);
   }
 }
 
@@ -1309,8 +1313,10 @@ function renderGridLayout(container, articles, feeds) {
 function renderMagazineLayout(container, articles, feeds) {
   if (articles.length === 0) return;
   
-  const featured = articles[0];
-  const rest = articles.slice(1);
+  // Limit to 50 articles for performance
+  const limitedArticles = articles.slice(0, 50);
+  const featured = limitedArticles[0];
+  const rest = limitedArticles.slice(1);
   const featuredFeed = feeds.find(f => f.id === featured.feedId);
   const featuredImgMatch = (featured.content || '').match(/<img[^>]+src=["']([^"']+)["']/i);
   const featuredImage = featuredImgMatch ? featuredImgMatch[1] : null;

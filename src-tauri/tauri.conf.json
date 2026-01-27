@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-app",
+  "productName": "Fetch N Feed",
   "version": "0.1.0",
-  "identifier": "com.leatonnortheasternedu.tauri-app",
+  "identifier": "com.fetchnfeed.app",
   "build": {
     "frontendDist": "../src"
   },

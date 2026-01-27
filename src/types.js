@@ -7,6 +7,8 @@ export const defaultAppData = {
   articles: [],
   folders: [],
   tags: [],
+  notes: [],
+  noteTags: [],
   filterRules: [],
   trainingSignals: [],
   savedSearches: [],

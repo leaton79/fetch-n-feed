@@ -373,3 +373,171 @@ export async function refreshAllFeeds(maxAgeDays = 7) {
   
   return results;
 }
+
+// ============ NOTES ============
+
+export async function addNote(note) {
+  const data = getData();
+  
+  const newNote = {
+    id: generateId(),
+    articleId: note.articleId,
+    articleTitle: note.articleTitle,
+    articleUrl: note.articleUrl,
+    articleAuthor: note.articleAuthor || '',
+    articlePublishedAt: note.articlePublishedAt || '',
+    feedTitle: note.feedTitle || '',
+    highlightedText: note.highlightedText || '',
+    annotation: note.annotation || '',
+    tags: note.tags || [],
+    createdAt: now(),
+    updatedAt: now(),
+    // APA citation fields (editable)
+    citationAuthor: note.articleAuthor || '',
+    citationDate: note.articlePublishedAt ? new Date(note.articlePublishedAt).getFullYear().toString() : '',
+    citationTitle: note.articleTitle || '',
+    citationSource: note.feedTitle || '',
+    citationUrl: note.articleUrl || '',
+  };
+  
+  const newNotes = [...(data.notes || []), newNote];
+  await updateData({ notes: newNotes });
+  return newNote;
+}
+
+export async function updateNote(id, updates) {
+  const data = getData();
+  const notes = data.notes || [];
+  const index = notes.findIndex(n => n.id === id);
+  
+  if (index === -1) return null;
+  
+  const updatedNote = { ...notes[index], ...updates, updatedAt: now() };
+  const newNotes = [...notes];
+  newNotes[index] = updatedNote;
+  
+  await updateData({ notes: newNotes });
+  return updatedNote;
+}
+
+export async function deleteNote(id) {
+  const data = getData();
+  const notes = data.notes || [];
+  const newNotes = notes.filter(n => n.id !== id);
+  
+  if (newNotes.length === notes.length) return false;
+  
+  await updateData({ notes: newNotes });
+  return true;
+}
+
+export async function deleteMultipleNotes(ids) {
+  const data = getData();
+  const notes = data.notes || [];
+  const idSet = new Set(ids);
+  const newNotes = notes.filter(n => !idSet.has(n.id));
+  
+  await updateData({ notes: newNotes });
+  return true;
+}
+
+export function getAllNotes() {
+  const data = getData();
+  return data.notes || [];
+}
+
+export function getNotesByArticle(articleId) {
+  return getAllNotes().filter(n => n.articleId === articleId);
+}
+
+export function getNotesByTag(tagName) {
+  return getAllNotes().filter(n => n.tags.includes(tagName));
+}
+
+export function getAllNoteTags() {
+  const data = getData();
+  return data.noteTags || [];
+}
+
+export async function addNoteTag(name, color) {
+  const data = getData();
+  const noteTags = data.noteTags || [];
+  
+  // Check if tag already exists
+  const existing = noteTags.find(t => t.name.toLowerCase() === name.toLowerCase());
+  if (existing) return existing;
+  
+  const tag = {
+    id: generateId(),
+    name,
+    color: color || '#007aff',
+  };
+  
+  await updateData({ noteTags: [...noteTags, tag] });
+  return tag;
+}
+
+export async function deleteNoteTag(id) {
+  const data = getData();
+  const noteTags = data.noteTags || [];
+  const tagToDelete = noteTags.find(t => t.id === id);
+  
+  if (!tagToDelete) return false;
+  
+  const newNoteTags = noteTags.filter(t => t.id !== id);
+  
+  // Remove tag from all notes
+  const notes = data.notes || [];
+  const newNotes = notes.map(n => ({
+    ...n,
+    tags: n.tags.filter(t => t !== tagToDelete.name),
+  }));
+  
+  await updateData({ noteTags: newNoteTags, notes: newNotes });
+  return true;
+}
+
+// Generate APA citation from note
+export function generateAPACitation(note) {
+  const author = note.citationAuthor || 'Unknown Author';
+  const year = note.citationDate || 'n.d.';
+  const title = note.citationTitle || 'Untitled';
+  const source = note.citationSource || '';
+  const url = note.citationUrl || '';
+  
+  let citation = `${author} (${year}). ${title}.`;
+  if (source) citation += ` ${source}.`;
+  if (url) citation += ` Retrieved from ${url}`;
+  
+  return citation;
+}
+
+// Export notes to text
+export function exportNotesToText(notes) {
+  let text = 'FETCH N FEED - EXPORTED NOTES\n';
+  text += `Exported: ${new Date().toLocaleString()}\n`;
+  text += '='.repeat(50) + '\n\n';
+  
+  notes.forEach((note, index) => {
+    text += `--- Note ${index + 1} ---\n\n`;
+    
+    if (note.highlightedText) {
+      text += `HIGHLIGHT:\n"${note.highlightedText}"\n\n`;
+    }
+    
+    if (note.annotation) {
+      text += `ANNOTATION:\n${note.annotation}\n\n`;
+    }
+    
+    if (note.tags.length > 0) {
+      text += `TAGS: ${note.tags.join(', ')}\n\n`;
+    }
+    
+    text += `CITATION (APA):\n${generateAPACitation(note)}\n\n`;
+    text += `SOURCE URL: ${note.citationUrl}\n`;
+    text += `DATE CREATED: ${new Date(note.createdAt).toLocaleString()}\n`;
+    text += '\n' + '-'.repeat(50) + '\n\n';
+  });
+  
+  return text;
+}

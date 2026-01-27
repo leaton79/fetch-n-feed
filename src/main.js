@@ -1,7 +1,7 @@
 // main.js - Fetch N Feed entry point
 
 import { loadData, getData, exportData } from './database.js';
-import { addFeed, getAllFeeds, getAllArticles, getArticlesByFeed, deleteFeed, markArticleRead, toggleArticleStar, toggleArticleArchive, refreshFeed, refreshAllFeeds, addFolder, deleteFolder, getAllFolders, updateFeed } from './feedManager.js';
+import { addFeed, getAllFeeds, getAllArticles, getArticlesByFeed, deleteFeed, markArticleRead, toggleArticleStar, toggleArticleArchive, refreshFeed, refreshAllFeeds, addFolder, deleteFolder, getAllFolders, updateFeed, addNote, updateNote, deleteNote, deleteMultipleNotes, getAllNotes, getNotesByTag, getAllNoteTags, addNoteTag, deleteNoteTag, generateAPACitation, exportNotesToText } from './feedManager.js';
 import { downloadOPML, parseOPML } from './opml.js';
 
 let currentFeedId = null;
@@ -15,6 +15,11 @@ let currentLayout = 'list';
 let currentFilter = 'all'; // all, unread, starred, archived
 let currentFolderId = null;
 let expandedFolders = new Set();
+let showNotesView = false;
+let notesSort = 'newest'; // newest, oldest, publication, tag
+let notesTagFilter = null;
+let selectedNotes = new Set();
+let editingNote = null;
 
 // Extract full article content from a URL
 async function extractArticle(url) {
@@ -308,36 +313,54 @@ function truncate(text, maxLength) {
   return clean.substring(0, maxLength).trim() + '...';
 }
 
-function formatArticleContent(content) {
+function formatArticleContent(content, articleId = null) {
   if (!content) return '<p>No content available.</p>';
   
+  let formatted;
+  
   if (content.includes('<p>') || content.includes('<div>') || content.includes('<img')) {
-    return content.replace(/<img([^>]*)>/gi, (match, attrs) => {
+    formatted = content.replace(/<img([^>]*)>/gi, (match, attrs) => {
       const cleanAttrs = attrs
         .replace(/width\s*=\s*["'][^"']*["']/gi, '')
         .replace(/height\s*=\s*["'][^"']*["']/gi, '')
         .replace(/style\s*=\s*["'][^"']*["']/gi, '');
       return `<img${cleanAttrs} style="max-width: 100%; height: auto; border-radius: 8px; margin: 16px 0; display: block;">`;
     });
+  } else {
+    formatted = content
+      .split('\n\n')
+      .map(para => {
+        para = para.trim();
+        if (!para) return '';
+        if (para.startsWith('## ')) {
+          return `<h2 style="font-size: 20px; font-weight: 600; margin: 24px 0 12px 0;">${para.substring(3)}</h2>`;
+        }
+        if (para.startsWith('> ')) {
+          return `<blockquote style="border-left: 3px solid #ddd; padding-left: 16px; margin: 16px 0; color: #555; font-style: italic;">${para.substring(2)}</blockquote>`;
+        }
+        if (para.startsWith('• ')) {
+          return `<ul style="margin: 8px 0; padding-left: 20px;"><li>${para.substring(2)}</li></ul>`;
+        }
+        return `<p style="margin: 0 0 16px 0;">${para}</p>`;
+      })
+      .join('');
   }
   
-  return content
-    .split('\n\n')
-    .map(para => {
-      para = para.trim();
-      if (!para) return '';
-      if (para.startsWith('## ')) {
-        return `<h2 style="font-size: 20px; font-weight: 600; margin: 24px 0 12px 0;">${para.substring(3)}</h2>`;
+  // Apply saved highlights from notes
+  if (articleId) {
+    const notes = getAllNotes().filter(n => n.articleId === articleId && n.highlightedText);
+    for (const note of notes) {
+      const highlightText = note.highlightedText;
+      if (highlightText && highlightText.length > 3) {
+        // Escape special regex characters
+        const escaped = highlightText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`(${escaped})`, 'gi');
+        formatted = formatted.replace(regex, `<mark style="background: #fff59d; padding: 2px 0; border-radius: 2px;" title="Note saved">$1</mark>`);
       }
-      if (para.startsWith('> ')) {
-        return `<blockquote style="border-left: 3px solid #ddd; padding-left: 16px; margin: 16px 0; color: #555; font-style: italic;">${para.substring(2)}</blockquote>`;
-      }
-      if (para.startsWith('• ')) {
-        return `<ul style="margin: 8px 0; padding-left: 20px;"><li>${para.substring(2)}</li></ul>`;
-      }
-      return `<p style="margin: 0 0 16px 0;">${para}</p>`;
-    })
-    .join('');
+    }
+  }
+  
+  return formatted;
 }
 
 function sortArticles(articles, feeds) {
@@ -446,6 +469,12 @@ function renderApp() {
                 <span style="color: ${currentFilter === 'archived' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${archivedCount}</span>
               </a>
             </div>
+            <div style="margin-bottom: 4px;">
+              <a href="#" id="btn-notes" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${showNotesView ? '#007aff' : 'transparent'}; color: ${showNotesView ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
+                <span>📝 Notes</span>
+                <span style="color: ${showNotesView ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${(getData().notes || []).length}</span>
+              </a>
+            </div>
           `;
         })()}
         
@@ -525,6 +554,9 @@ function renderApp() {
               <button id="btn-open-external" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #007aff; color: white; border: none; border-radius: 4px;">
                 Open in Browser ↗
               </button>
+              <button id="btn-add-note" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #9c27b0; color: white; border: none; border-radius: 4px;">
+                📝 Add Note
+              </button>
             </div>
           </div>
           
@@ -542,7 +574,7 @@ function renderApp() {
                 ${selectedArticle.publishedAt ? new Date(selectedArticle.publishedAt).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : ''}
               </div>
               <div id="article-text" style="font-size: ${articleFontSize}px; line-height: 1.7; color: #333;">
-                ${formatArticleContent(selectedArticle.content || selectedArticle.summary || 'No content available.')}
+                ${formatArticleContent(selectedArticle.content || selectedArticle.summary || 'No content available.', selectedArticle.id)}
               </div>
             `}
           </div>
@@ -620,6 +652,7 @@ function renderApp() {
   });
   document.getElementById('btn-all-articles').addEventListener('click', (e) => {
     e.preventDefault();
+    showNotesView = false;
     currentFeedId = null;
     currentFilter = 'all';
     selectedArticle = null;
@@ -628,6 +661,7 @@ function renderApp() {
   
   document.getElementById('btn-unread').addEventListener('click', (e) => {
     e.preventDefault();
+    showNotesView = false;
     currentFeedId = null;
     currentFilter = 'unread';
     selectedArticle = null;
@@ -636,6 +670,7 @@ function renderApp() {
   
   document.getElementById('btn-starred').addEventListener('click', (e) => {
     e.preventDefault();
+    showNotesView = false;
     currentFeedId = null;
     currentFilter = 'starred';
     selectedArticle = null;
@@ -644,8 +679,17 @@ function renderApp() {
   
   document.getElementById('btn-archived').addEventListener('click', (e) => {
     e.preventDefault();
+    showNotesView = false;
     currentFeedId = null;
     currentFilter = 'archived';
+    selectedArticle = null;
+    renderApp();
+  });
+  document.getElementById('btn-notes').addEventListener('click', (e) => {
+    e.preventDefault();
+    showNotesView = true;
+    currentFeedId = null;
+    currentFolderId = null;
     selectedArticle = null;
     renderApp();
   });
@@ -721,15 +765,13 @@ function renderApp() {
     });
   }
   
-  const shareBtn = document.getElementById('btn-share-article');
-  if (shareBtn) {
-    shareBtn.addEventListener('click', async () => {
+  const addNoteBtn = document.getElementById('btn-add-note');
+  if (addNoteBtn) {
+    addNoteBtn.addEventListener('click', () => {
       if (selectedArticle) {
-        try {
-          await navigator.clipboard.writeText(`${stripHtml(selectedArticle.title)}\n${selectedArticle.url}`);
-          shareBtn.textContent = '✓ Copied!';
-          setTimeout(() => { shareBtn.textContent = '📋 Share'; }, 2000);
-        } catch (err) { console.error('Failed to copy:', err); }
+        const selection = window.getSelection();
+        const highlightedText = selection.toString().trim();
+        showAddNoteDialog(selectedArticle, highlightedText);
       }
     });
   }
@@ -1052,6 +1094,12 @@ function renderArticles() {
   const container = document.getElementById('articles-list');
   const statusBar = document.getElementById('status-bar');
   
+  // Show notes view if active
+  if (showNotesView) {
+    renderNotesView();
+    return;
+  }
+  
   const feeds = getAllFeeds();
   
   // Get all articles (we'll filter ourselves)
@@ -1240,7 +1288,7 @@ function renderInlineLayout(container, articles, feeds) {
         </div>
         ${isExpanded ? `
           <div style="padding: 0 20px 20px 24px; border-top: 1px solid #eee;">
-            <div style="font-size: ${articleFontSize}px; line-height: 1.7; color: #333; padding-top: 16px;">${formatArticleContent(selectedArticle.content || selectedArticle.summary || 'No content available.')}</div>
+            <div style="font-size: ${articleFontSize}px; line-height: 1.7; color: #333; padding-top: 16px;">${formatArticleContent(selectedArticle.content || selectedArticle.summary || 'No content available.', selectedArticle.id)}</div>
             <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid #eee; display: flex; gap: 12px;">
               <button class="btn-inline-share" data-url="${article.url}" data-title="${stripHtml(article.title).replace(/"/g, '&quot;')}" style="padding: 8px 16px; font-size: 13px; cursor: pointer; background: #34c759; color: white; border: none; border-radius: 6px;">📋 Share</button>
               <button class="btn-inline-open" data-url="${article.url}" style="padding: 8px 16px; font-size: 13px; cursor: pointer; background: #007aff; color: white; border: none; border-radius: 6px;">Open in Browser ↗</button>
@@ -1293,7 +1341,512 @@ function renderInlineLayout(container, articles, feeds) {
     btn.addEventListener('click', (e) => { e.stopPropagation(); window.open(btn.dataset.url, '_blank'); });
   });
 }
+function renderNotesView() {
+  const container = document.getElementById('articles-list');
+  const statusBar = document.getElementById('status-bar');
+  
+  let notes = getAllNotes();
+  const noteTags = getAllNoteTags();
+  
+  // Apply tag filter
+  if (notesTagFilter) {
+    notes = notes.filter(n => n.tags.includes(notesTagFilter));
+  }
+  
+  // Sort notes
+  switch (notesSort) {
+    case 'oldest':
+      notes.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      break;
+    case 'publication':
+      notes.sort((a, b) => (a.feedTitle || '').localeCompare(b.feedTitle || ''));
+      break;
+    case 'tag':
+      notes.sort((a, b) => (a.tags[0] || '').localeCompare(b.tags[0] || ''));
+      break;
+    default: // newest
+      notes.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  
+  statusBar.textContent = `Notes — ${notes.length} ${notes.length === 1 ? 'note' : 'notes'}${notesTagFilter ? ` (filtered by: ${notesTagFilter})` : ''}`;
+  
+  if (notes.length === 0) {
+    container.innerHTML = `
+      <div style="text-align: center; padding: 60px 20px; color: #999;">
+        <div style="font-size: 48px; margin-bottom: 16px;">📝</div>
+        <p style="font-size: 18px; margin-bottom: 8px; color: #666;">No notes yet</p>
+        <p style="font-size: 14px;">Highlight text in articles to create notes.</p>
+      </div>
+    `;
+    return;
+  }
+  
+  let html = `
+    <!-- Notes Controls -->
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding: 12px; background: white; border-radius: 8px; border: 1px solid #e8e8e8;">
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <label style="font-size: 12px; color: #666;">Sort:</label>
+        <select id="notes-sort-select" style="padding: 4px 8px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; background: white;">
+          <option value="newest" ${notesSort === 'newest' ? 'selected' : ''}>Newest</option>
+          <option value="oldest" ${notesSort === 'oldest' ? 'selected' : ''}>Oldest</option>
+          <option value="publication" ${notesSort === 'publication' ? 'selected' : ''}>Publication</option>
+          <option value="tag" ${notesSort === 'tag' ? 'selected' : ''}>Tag</option>
+        </select>
+        
+        <label style="font-size: 12px; color: #666; margin-left: 8px;">Filter:</label>
+        <select id="notes-tag-filter" style="padding: 4px 8px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; background: white;">
+          <option value="">All Tags</option>
+          ${noteTags.map(t => `<option value="${t.name}" ${notesTagFilter === t.name ? 'selected' : ''}>${t.name}</option>`).join('')}
+        </select>
+      </div>
+      
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 12px; color: #666;">${selectedNotes.size} selected</span>
+        <button id="btn-export-selected" style="padding: 6px 12px; font-size: 12px; cursor: pointer; background: ${selectedNotes.size > 0 ? '#007aff' : '#e8e8e8'}; color: ${selectedNotes.size > 0 ? 'white' : '#999'}; border: none; border-radius: 4px;" ${selectedNotes.size === 0 ? 'disabled' : ''}>
+          Export Selected
+        </button>
+        <button id="btn-delete-selected" style="padding: 6px 12px; font-size: 12px; cursor: pointer; background: ${selectedNotes.size > 0 ? '#ff3b30' : '#e8e8e8'}; color: ${selectedNotes.size > 0 ? 'white' : '#999'}; border: none; border-radius: 4px;" ${selectedNotes.size === 0 ? 'disabled' : ''}>
+          Delete Selected
+        </button>
+        <button id="btn-select-all-notes" style="padding: 6px 12px; font-size: 12px; cursor: pointer; background: #e8e8e8; color: #333; border: none; border-radius: 4px;">
+          ${selectedNotes.size === notes.length ? 'Deselect All' : 'Select All'}
+        </button>
+      </div>
+    </div>
+  `;
+  
+  notes.forEach(note => {
+    const isSelected = selectedNotes.has(note.id);
+    const citation = generateAPACitation(note);
+    const createdDate = new Date(note.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    
+    html += `
+      <div class="note-card" data-note-id="${note.id}" style="background: white; border-radius: 8px; padding: 16px; margin-bottom: 12px; border: 2px solid ${isSelected ? '#007aff' : '#e8e8e8'};">
+        
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <input type="checkbox" class="note-checkbox" data-note-id="${note.id}" ${isSelected ? 'checked' : ''} style="width: 18px; height: 18px; cursor: pointer;">
+            <div>
+              <div style="font-size: 14px; font-weight: 600; color: #1a1a1a;">${stripHtml(note.articleTitle)}</div>
+              <div style="font-size: 12px; color: #666;">${note.feedTitle} • ${createdDate}</div>
+            </div>
+          </div>
+          <div style="display: flex; gap: 4px;">
+            <button class="btn-copy-note" data-note-id="${note.id}" style="background: none; border: none; cursor: pointer; font-size: 14px; padding: 4px 8px;" title="Copy to clipboard">📋</button>
+            <button class="btn-edit-note" data-note-id="${note.id}" style="background: none; border: none; cursor: pointer; font-size: 14px; padding: 4px 8px;" title="Edit">✏️</button>
+            <button class="btn-export-note" data-note-id="${note.id}" style="background: none; border: none; cursor: pointer; font-size: 14px; padding: 4px 8px;" title="Export">📤</button>
+            <button class="btn-delete-note" data-note-id="${note.id}" style="background: none; border: none; cursor: pointer; font-size: 14px; padding: 4px 8px;" title="Delete">🗑️</button>
+          </div>
+        </div>
+        
+        ${note.highlightedText ? `
+          <div style="background: #fffde7; border-left: 4px solid #ffd54f; padding: 12px; margin-bottom: 12px; border-radius: 0 6px 6px 0;">
+            <div style="font-size: 12px; color: #888; margin-bottom: 4px;">HIGHLIGHT</div>
+            <div style="font-size: 14px; color: #333; font-style: italic;">"${stripHtml(note.highlightedText)}"</div>
+          </div>
+        ` : ''}
+        
+        ${note.annotation ? `
+          <div style="background: #e3f2fd; border-left: 4px solid #2196f3; padding: 12px; margin-bottom: 12px; border-radius: 0 6px 6px 0;">
+            <div style="font-size: 12px; color: #888; margin-bottom: 4px;">ANNOTATION</div>
+            <div style="font-size: 14px; color: #333;">${stripHtml(note.annotation)}</div>
+          </div>
+        ` : ''}
+        
+        ${note.tags.length > 0 ? `
+          <div style="margin-bottom: 12px;">
+            ${note.tags.map(tag => `<span style="display: inline-block; padding: 4px 10px; background: #e8e8e8; border-radius: 12px; font-size: 12px; color: #555; margin-right: 6px;">${tag}</span>`).join('')}
+          </div>
+        ` : ''}
+        
+        <div style="background: #f5f5f5; padding: 10px 12px; border-radius: 6px; font-size: 12px; color: #666;">
+          <strong>Citation (APA):</strong> ${citation}
+        </div>
+      </div>
+    `;
+  });
+  
+  container.innerHTML = html;
+  
+  // Event listeners
+  document.getElementById('notes-sort-select').addEventListener('change', (e) => {
+    notesSort = e.target.value;
+    renderNotesView();
+  });
+  
+  document.getElementById('notes-tag-filter').addEventListener('change', (e) => {
+    notesTagFilter = e.target.value || null;
+    selectedNotes.clear();
+    renderNotesView();
+  });
+  
+  document.getElementById('btn-select-all-notes').addEventListener('click', () => {
+    if (selectedNotes.size === notes.length) {
+      selectedNotes.clear();
+    } else {
+      notes.forEach(n => selectedNotes.add(n.id));
+    }
+    renderNotesView();
+  });
+  
+  document.getElementById('btn-export-selected').addEventListener('click', () => {
+    if (selectedNotes.size === 0) return;
+    const notesToExport = notes.filter(n => selectedNotes.has(n.id));
+    downloadNotesAsText(notesToExport);
+  });
+  
+  document.getElementById('btn-delete-selected').addEventListener('click', async () => {
+    if (selectedNotes.size === 0) return;
+    await deleteMultipleNotes(Array.from(selectedNotes));
+    selectedNotes.clear();
+    renderApp();
+  });
+  
+  document.querySelectorAll('.note-checkbox').forEach(checkbox => {
+    checkbox.addEventListener('change', (e) => {
+      const noteId = e.target.dataset.noteId;
+      if (e.target.checked) {
+        selectedNotes.add(noteId);
+      } else {
+        selectedNotes.delete(noteId);
+      }
+      renderNotesView();
+    });
+  });
+  
+  document.querySelectorAll('.btn-edit-note').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const noteId = btn.dataset.noteId;
+      const note = notes.find(n => n.id === noteId);
+      if (note) showEditNoteDialog(note);
+    });
+  });
+  
+  document.querySelectorAll('.btn-export-note').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const noteId = btn.dataset.noteId;
+      const note = notes.find(n => n.id === noteId);
+      if (note) downloadNotesAsText([note]);
+    });
+  });
+  
+  document.querySelectorAll('.btn-copy-note').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const noteId = btn.dataset.noteId;
+      const note = notes.find(n => n.id === noteId);
+      if (note) {
+        let copyText = '';
+        if (note.highlightedText) {
+          copyText += `"${note.highlightedText}"\n\n`;
+        }
+        if (note.annotation) {
+          copyText += `${note.annotation}\n\n`;
+        }
+        copyText += `— ${generateAPACitation(note)}`;
+        
+        try {
+          await navigator.clipboard.writeText(copyText);
+          btn.textContent = '✓';
+          setTimeout(() => { btn.textContent = '📋'; }, 1500);
+        } catch (err) {
+          console.error('Copy failed:', err);
+        }
+      }
+    });
+  });
+  
+  document.querySelectorAll('.btn-delete-note').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const noteId = btn.dataset.noteId;
+      await deleteNote(noteId);
+      renderApp();
+    });
+  });
+}
 
+function downloadNotesAsText(notes) {
+  const text = exportNotesToText(notes);
+  
+  // Show export dialog with text
+  const dialogHtml = `
+    <div id="export-dialog" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+      <div style="background: white; border-radius: 12px; padding: 24px; width: 600px; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,0.2);">
+        <h3 style="margin: 0 0 16px 0; font-size: 18px;">Export Notes (${notes.length} ${notes.length === 1 ? 'note' : 'notes'})</h3>
+        <textarea id="export-text" readonly style="flex: 1; min-height: 300px; padding: 12px; font-size: 13px; font-family: monospace; border: 1px solid #d0d0d0; border-radius: 6px; resize: none; background: #f9f9f9;">${text.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+        <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;">
+          <button id="export-copy-btn" style="padding: 10px 20px; font-size: 14px; cursor: pointer; background: #007aff; color: white; border: none; border-radius: 6px;">
+            📋 Copy to Clipboard
+          </button>
+          <button id="export-close-btn" style="padding: 10px 20px; font-size: 14px; cursor: pointer; background: #e8e8e8; border: none; border-radius: 6px;">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML('beforeend', dialogHtml);
+  
+  const dialog = document.getElementById('export-dialog');
+  const textarea = document.getElementById('export-text');
+  const copyBtn = document.getElementById('export-copy-btn');
+  const closeBtn = document.getElementById('export-close-btn');
+  
+  // Set actual text value (not HTML-escaped)
+  textarea.value = text;
+  
+  const closeDialog = () => dialog.remove();
+  
+  closeBtn.addEventListener('click', closeDialog);
+  
+  copyBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      copyBtn.textContent = '✓ Copied!';
+      setTimeout(() => { copyBtn.textContent = '📋 Copy to Clipboard'; }, 2000);
+    } catch (err) {
+      // Fallback: select text
+      textarea.select();
+      document.execCommand('copy');
+      copyBtn.textContent = '✓ Copied!';
+      setTimeout(() => { copyBtn.textContent = '📋 Copy to Clipboard'; }, 2000);
+    }
+  });
+  
+  dialog.addEventListener('click', (e) => {
+    if (e.target === dialog) closeDialog();
+  });
+}
+function showEditNoteDialog(note) {
+  const noteTags = getAllNoteTags();
+  
+  const dialogHtml = `
+    <div id="edit-note-dialog" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+      <div style="background: white; border-radius: 12px; padding: 24px; width: 500px; max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.2);">
+        <h3 style="margin: 0 0 20px 0; font-size: 18px;">Edit Note</h3>
+        
+        <div style="margin-bottom: 16px;">
+          <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Highlighted Text</label>
+          <textarea id="edit-highlight" style="width: 100%; padding: 10px; font-size: 14px; border: 1px solid #d0d0d0; border-radius: 6px; box-sizing: border-box; min-height: 80px; resize: vertical;">${note.highlightedText || ''}</textarea>
+        </div>
+        
+        <div style="margin-bottom: 16px;">
+          <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Annotation</label>
+          <textarea id="edit-annotation" style="width: 100%; padding: 10px; font-size: 14px; border: 1px solid #d0d0d0; border-radius: 6px; box-sizing: border-box; min-height: 80px; resize: vertical;">${note.annotation || ''}</textarea>
+        </div>
+        
+        <div style="margin-bottom: 16px;">
+          <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Tags (comma-separated)</label>
+          <input type="text" id="edit-tags" value="${note.tags.join(', ')}" style="width: 100%; padding: 10px; font-size: 14px; border: 1px solid #d0d0d0; border-radius: 6px; box-sizing: border-box;">
+          ${noteTags.length > 0 ? `<div style="margin-top: 6px; font-size: 11px; color: #888;">Existing tags: ${noteTags.map(t => t.name).join(', ')}</div>` : ''}
+        </div>
+        
+        <div style="background: #f5f5f5; padding: 12px; border-radius: 6px; margin-bottom: 16px;">
+          <div style="font-size: 12px; font-weight: 600; color: #666; margin-bottom: 12px;">Citation Information (APA)</div>
+          
+          <div style="margin-bottom: 12px;">
+            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Author</label>
+            <input type="text" id="edit-citation-author" value="${note.citationAuthor || ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
+          </div>
+          
+          <div style="margin-bottom: 12px;">
+            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Year</label>
+            <input type="text" id="edit-citation-date" value="${note.citationDate || ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
+          </div>
+          
+          <div style="margin-bottom: 12px;">
+            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Title</label>
+            <input type="text" id="edit-citation-title" value="${note.citationTitle || ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
+          </div>
+          
+          <div style="margin-bottom: 12px;">
+            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Source/Publication</label>
+            <input type="text" id="edit-citation-source" value="${note.citationSource || ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
+          </div>
+          
+          <div>
+            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">URL</label>
+            <input type="text" id="edit-citation-url" value="${note.citationUrl || ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
+          </div>
+        </div>
+        
+        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+          <button id="edit-note-cancel" style="padding: 10px 20px; font-size: 14px; cursor: pointer; background: #e8e8e8; border: none; border-radius: 6px;">
+            Cancel
+          </button>
+          <button id="edit-note-save" style="padding: 10px 20px; font-size: 14px; cursor: pointer; background: #007aff; color: white; border: none; border-radius: 6px;">
+            Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML('beforeend', dialogHtml);
+  
+  const dialog = document.getElementById('edit-note-dialog');
+  const cancelBtn = document.getElementById('edit-note-cancel');
+  const saveBtn = document.getElementById('edit-note-save');
+  
+  const closeDialog = () => dialog.remove();
+  
+  cancelBtn.addEventListener('click', closeDialog);
+  
+  saveBtn.addEventListener('click', async () => {
+    const tagsInput = document.getElementById('edit-tags').value;
+    const tags = tagsInput.split(',').map(t => t.trim()).filter(t => t);
+    
+    // Create any new tags
+    for (const tagName of tags) {
+      const existing = getAllNoteTags().find(t => t.name.toLowerCase() === tagName.toLowerCase());
+      if (!existing) {
+        await addNoteTag(tagName);
+      }
+    }
+    
+    await updateNote(note.id, {
+      highlightedText: document.getElementById('edit-highlight').value,
+      annotation: document.getElementById('edit-annotation').value,
+      tags: tags,
+      citationAuthor: document.getElementById('edit-citation-author').value,
+      citationDate: document.getElementById('edit-citation-date').value,
+      citationTitle: document.getElementById('edit-citation-title').value,
+      citationSource: document.getElementById('edit-citation-source').value,
+      citationUrl: document.getElementById('edit-citation-url').value,
+    });
+    
+    closeDialog();
+    renderApp();
+  });
+  
+  dialog.addEventListener('click', (e) => {
+    if (e.target === dialog) closeDialog();
+  });
+}
+function showAddNoteDialog(article, highlightedText = '') {
+  const feed = getAllFeeds().find(f => f.id === article.feedId);
+  const noteTags = getAllNoteTags();
+  
+  const dialogHtml = `
+    <div id="add-note-dialog" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+      <div style="background: white; border-radius: 12px; padding: 24px; width: 500px; max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.2);">
+        <h3 style="margin: 0 0 8px 0; font-size: 18px;">Add Note</h3>
+        <p style="margin: 0 0 20px 0; font-size: 13px; color: #666;">${stripHtml(article.title)}</p>
+        
+        <div style="margin-bottom: 16px;">
+          <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Highlighted Text (select text in article first, or paste here)</label>
+          <textarea id="new-highlight" style="width: 100%; padding: 10px; font-size: 14px; border: 1px solid #d0d0d0; border-radius: 6px; box-sizing: border-box; min-height: 80px; resize: vertical;">${highlightedText}</textarea>
+        </div>
+        
+        <div style="margin-bottom: 16px;">
+          <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Annotation (your notes)</label>
+          <textarea id="new-annotation" style="width: 100%; padding: 10px; font-size: 14px; border: 1px solid #d0d0d0; border-radius: 6px; box-sizing: border-box; min-height: 80px; resize: vertical;" placeholder="Add your thoughts, analysis, or notes here..."></textarea>
+        </div>
+        
+        <div style="margin-bottom: 16px;">
+          <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Tags (comma-separated)</label>
+          <input type="text" id="new-tags" style="width: 100%; padding: 10px; font-size: 14px; border: 1px solid #d0d0d0; border-radius: 6px; box-sizing: border-box;" placeholder="e.g., research, important, follow-up">
+          ${noteTags.length > 0 ? `<div style="margin-top: 6px; font-size: 11px; color: #888;">Existing tags: ${noteTags.map(t => t.name).join(', ')}</div>` : ''}
+        </div>
+        
+        <div style="background: #f5f5f5; padding: 12px; border-radius: 6px; margin-bottom: 16px;">
+          <div style="font-size: 12px; font-weight: 600; color: #666; margin-bottom: 12px;">Citation Information (APA) — editable</div>
+          
+          <div style="margin-bottom: 12px;">
+            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Author</label>
+            <input type="text" id="new-citation-author" value="${article.author ? stripHtml(article.author) : ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
+          </div>
+          
+          <div style="margin-bottom: 12px;">
+            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Year</label>
+            <input type="text" id="new-citation-date" value="${article.publishedAt ? new Date(article.publishedAt).getFullYear() : ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
+          </div>
+          
+          <div style="margin-bottom: 12px;">
+            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Title</label>
+            <input type="text" id="new-citation-title" value="${stripHtml(article.title)}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
+          </div>
+          
+          <div style="margin-bottom: 12px;">
+            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Source/Publication</label>
+            <input type="text" id="new-citation-source" value="${feed ? feed.title : ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
+          </div>
+          
+          <div>
+            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">URL</label>
+            <input type="text" id="new-citation-url" value="${article.url}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
+          </div>
+        </div>
+        
+        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+          <button id="add-note-cancel" style="padding: 10px 20px; font-size: 14px; cursor: pointer; background: #e8e8e8; border: none; border-radius: 6px;">
+            Cancel
+          </button>
+          <button id="add-note-save" style="padding: 10px 20px; font-size: 14px; cursor: pointer; background: #9c27b0; color: white; border: none; border-radius: 6px;">
+            Save Note
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML('beforeend', dialogHtml);
+  
+  const dialog = document.getElementById('add-note-dialog');
+  const cancelBtn = document.getElementById('add-note-cancel');
+  const saveBtn = document.getElementById('add-note-save');
+  
+  const closeDialog = () => dialog.remove();
+  
+  cancelBtn.addEventListener('click', closeDialog);
+  
+  saveBtn.addEventListener('click', async () => {
+    const highlightText = document.getElementById('new-highlight').value.trim();
+    const annotation = document.getElementById('new-annotation').value.trim();
+    
+    if (!highlightText && !annotation) {
+      alert('Please add a highlight or annotation');
+      return;
+    }
+    
+    const tagsInput = document.getElementById('new-tags').value;
+    const tags = tagsInput.split(',').map(t => t.trim()).filter(t => t);
+    
+    // Create any new tags
+    for (const tagName of tags) {
+      const existing = getAllNoteTags().find(t => t.name.toLowerCase() === tagName.toLowerCase());
+      if (!existing) {
+        await addNoteTag(tagName);
+      }
+    }
+    
+    const feed = getAllFeeds().find(f => f.id === article.feedId);
+    
+    await addNote({
+      articleId: article.id,
+      articleTitle: article.title,
+      articleUrl: article.url,
+      articleAuthor: document.getElementById('new-citation-author').value,
+      articlePublishedAt: article.publishedAt,
+      feedTitle: feed ? feed.title : '',
+      highlightedText: highlightText,
+      annotation: annotation,
+      tags: tags,
+      citationAuthor: document.getElementById('new-citation-author').value,
+      citationDate: document.getElementById('new-citation-date').value,
+      citationTitle: document.getElementById('new-citation-title').value,
+      citationSource: document.getElementById('new-citation-source').value,
+      citationUrl: document.getElementById('new-citation-url').value,
+    });
+    
+    closeDialog();
+    renderApp();
+  });
+  
+  dialog.addEventListener('click', (e) => {
+    if (e.target === dialog) closeDialog();
+  });
+}
 function attachArticleClickHandlers(articles) {
   document.querySelectorAll('.article-card').forEach(card => {
     card.addEventListener('click', async () => {

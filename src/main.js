@@ -1,7 +1,7 @@
 // main.js - Fetch N Feed entry point
 
 import { loadData, getData, exportData } from './database.js';
-import { addFeed, getAllFeeds, getAllArticles, getArticlesByFeed, deleteFeed, markArticleRead, refreshFeed, refreshAllFeeds } from './feedManager.js';
+import { addFeed, getAllFeeds, getAllArticles, getArticlesByFeed, deleteFeed, markArticleRead, toggleArticleStar, toggleArticleArchive, refreshFeed, refreshAllFeeds } from './feedManager.js';
 
 let currentFeedId = null;
 let currentSort = 'newest';
@@ -11,6 +11,7 @@ let sidebarWidth = 260;
 let articleListWidth = 350;
 let articleFontSize = 16;
 let currentLayout = 'list';
+let currentFilter = 'all'; // all, unread, starred, archived
 
 // Extract full article content from a URL
 async function extractArticle(url) {
@@ -169,11 +170,39 @@ function renderApp() {
           ↻ Refresh All Feeds
         </button>
         
-        <div style="margin-bottom: 8px;">
-          <a href="#" id="btn-all-articles" style="display: block; padding: 10px 12px; background: ${currentFeedId === null ? '#007aff' : 'transparent'}; color: ${currentFeedId === null ? 'white' : '#333'}; text-decoration: none; border-radius: 6px; font-weight: ${currentFeedId === null ? '500' : 'normal'};">
-            📚 All Articles
-          </a>
-        </div>
+      ${(() => {
+          const allArticles = getData().articles;
+          const allCount = allArticles.filter(a => !a.isArchived).length;
+          const unreadCount = allArticles.filter(a => !a.isRead && !a.isArchived).length;
+          const starredCount = allArticles.filter(a => a.isStarred).length;
+          const archivedCount = allArticles.filter(a => a.isArchived).length;
+          return `
+            <div style="margin-bottom: 4px;">
+              <a href="#" id="btn-all-articles" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${currentFilter === 'all' && currentFeedId === null ? '#007aff' : 'transparent'}; color: ${currentFilter === 'all' && currentFeedId === null ? 'white' : '#333'}; text-decoration: none; border-radius: 6px; font-weight: ${currentFilter === 'all' ? '500' : 'normal'};">
+                <span>📚 All Articles</span>
+                <span style="color: ${currentFilter === 'all' && currentFeedId === null ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${allCount}</span>
+              </a>
+            </div>
+            <div style="margin-bottom: 4px;">
+              <a href="#" id="btn-unread" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${currentFilter === 'unread' ? '#007aff' : 'transparent'}; color: ${currentFilter === 'unread' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
+                <span>📩 Unread</span>
+                <span style="color: ${currentFilter === 'unread' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${unreadCount}</span>
+              </a>
+            </div>
+            <div style="margin-bottom: 4px;">
+              <a href="#" id="btn-starred" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${currentFilter === 'starred' ? '#007aff' : 'transparent'}; color: ${currentFilter === 'starred' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
+                <span>⭐ Starred</span>
+                <span style="color: ${currentFilter === 'starred' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${starredCount}</span>
+              </a>
+            </div>
+            <div style="margin-bottom: 8px;">
+              <a href="#" id="btn-archived" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${currentFilter === 'archived' ? '#007aff' : 'transparent'}; color: ${currentFilter === 'archived' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
+                <span>📦 Archived</span>
+                <span style="color: ${currentFilter === 'archived' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${archivedCount}</span>
+              </a>
+            </div>
+          `;
+        })()}
         
         <div style="font-size: 11px; color: #888; margin: 16px 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;">Feeds</div>
         <div id="feeds-list"></div>
@@ -228,6 +257,12 @@ function renderApp() {
                 <span style="font-size: 12px; color: #666; min-width: 35px; text-align: center;">${articleFontSize}px</span>
                 <button id="btn-font-increase" style="padding: 4px 10px; font-size: 14px; cursor: pointer; background: transparent; border: none;">A+</button>
               </div>
+              <button id="btn-star-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: ${selectedArticle.isStarred ? '#ff9500' : '#e8e8e8'}; color: ${selectedArticle.isStarred ? 'white' : '#333'}; border: none; border-radius: 4px;">
+                ${selectedArticle.isStarred ? '★ Starred' : '☆ Star'}
+              </button>
+              <button id="btn-archive-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: ${selectedArticle.isArchived ? '#8e8e93' : '#e8e8e8'}; color: ${selectedArticle.isArchived ? 'white' : '#333'}; border: none; border-radius: 4px;">
+                ${selectedArticle.isArchived ? '📦 Archived' : '📥 Archive'}
+              </button>
               <button id="btn-share-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #34c759; color: white; border: none; border-radius: 4px;">
                 📋 Share
               </button>
@@ -266,6 +301,31 @@ function renderApp() {
   document.getElementById('btn-all-articles').addEventListener('click', (e) => {
     e.preventDefault();
     currentFeedId = null;
+    currentFilter = 'all';
+    selectedArticle = null;
+    renderApp();
+  });
+  
+  document.getElementById('btn-unread').addEventListener('click', (e) => {
+    e.preventDefault();
+    currentFeedId = null;
+    currentFilter = 'unread';
+    selectedArticle = null;
+    renderApp();
+  });
+  
+  document.getElementById('btn-starred').addEventListener('click', (e) => {
+    e.preventDefault();
+    currentFeedId = null;
+    currentFilter = 'starred';
+    selectedArticle = null;
+    renderApp();
+  });
+  
+  document.getElementById('btn-archived').addEventListener('click', (e) => {
+    e.preventDefault();
+    currentFeedId = null;
+    currentFilter = 'archived';
     selectedArticle = null;
     renderApp();
   });
@@ -284,6 +344,28 @@ function renderApp() {
   
   const openExternalBtn = document.getElementById('btn-open-external');
   if (openExternalBtn) openExternalBtn.addEventListener('click', () => { if (selectedArticle) window.open(selectedArticle.url, '_blank'); });
+  
+  const starBtn = document.getElementById('btn-star-article');
+  if (starBtn) {
+    starBtn.addEventListener('click', async () => {
+      if (selectedArticle) {
+        await toggleArticleStar(selectedArticle.id);
+        selectedArticle = { ...selectedArticle, isStarred: !selectedArticle.isStarred };
+        renderApp();
+      }
+    });
+  }
+  
+  const archiveBtn = document.getElementById('btn-archive-article');
+  if (archiveBtn) {
+    archiveBtn.addEventListener('click', async () => {
+      if (selectedArticle) {
+        await toggleArticleArchive(selectedArticle.id);
+        selectedArticle = { ...selectedArticle, isArchived: !selectedArticle.isArchived };
+        renderApp();
+      }
+    });
+  }
   
   const shareBtn = document.getElementById('btn-share-article');
   if (shareBtn) {
@@ -420,7 +502,28 @@ function renderArticles() {
   const statusBar = document.getElementById('status-bar');
   
   const feeds = getAllFeeds();
-  let articles = currentFeedId ? getArticlesByFeed(currentFeedId) : getAllArticles();
+  
+  // Get all articles (we'll filter ourselves)
+  const allArticlesRaw = getData().articles;
+  let articles = currentFeedId 
+    ? allArticlesRaw.filter(a => a.feedId === currentFeedId)
+    : allArticlesRaw;
+  
+  // Apply filter
+  switch (currentFilter) {
+    case 'unread':
+      articles = articles.filter(a => !a.isRead);
+      break;
+    case 'starred':
+      articles = articles.filter(a => a.isStarred);
+      break;
+    case 'archived':
+      articles = articles.filter(a => a.isArchived);
+      break;
+    default:
+      articles = articles.filter(a => !a.isArchived);
+  }
+  
   articles = sortArticles(articles, feeds);
   
   const currentFeed = currentFeedId ? feeds.find(f => f.id === currentFeedId) : null;

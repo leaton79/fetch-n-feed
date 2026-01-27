@@ -151,6 +151,23 @@ export async function archiveArticle(id) {
   await updateData({ articles: newArticles });
 }
 
+export async function toggleArticleArchive(id) {
+  const data = getData();
+  const index = data.articles.findIndex(a => a.id === id);
+  
+  if (index === -1) return false;
+  
+  const isNowArchived = !data.articles[index].isArchived;
+  
+  const newArticles = [...data.articles];
+  newArticles[index] = {
+    ...newArticles[index],
+    isArchived: isNowArchived,
+  };
+  
+  await updateData({ articles: newArticles });
+  return isNowArchived;
+}
 export function getArticle(id) {
   return getData().articles.find(a => a.id === id);
 }

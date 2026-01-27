@@ -90,9 +90,17 @@ function truncate(text, maxLength) {
 function formatArticleContent(content) {
   if (!content) return '<p>No content available.</p>';
   
-  // If content already looks like HTML, sanitize and return
-  if (content.includes('<p>') || content.includes('<div>')) {
-    return content;
+  // If content already looks like HTML, fix images and return
+  if (content.includes('<p>') || content.includes('<div>') || content.includes('<img')) {
+    // Make all images responsive
+    return content.replace(/<img([^>]*)>/gi, (match, attrs) => {
+      // Remove existing width/height attributes and add responsive styles
+      const cleanAttrs = attrs
+        .replace(/width\s*=\s*["'][^"']*["']/gi, '')
+        .replace(/height\s*=\s*["'][^"']*["']/gi, '')
+        .replace(/style\s*=\s*["'][^"']*["']/gi, '');
+      return `<img${cleanAttrs} style="max-width: 100%; height: auto; border-radius: 8px; margin: 16px 0; display: block;">`;
+    });
   }
   
   // Convert plain text/markdown-style content to HTML
@@ -257,7 +265,7 @@ function renderApp() {
           </div>
           
           <!-- Article Content -->
-          <div id="article-content" style="flex: 1; overflow-y: auto; padding: 24px 32px; max-width: 800px;">
+          <div id="article-content" style="flex: 1; overflow-y: auto; padding: 24px 32px;">
             ${isLoadingArticle ? `
               <div style="text-align: center; padding: 40px; color: #666;">
                 <p style="font-size: 16px;">Loading full article...</p>

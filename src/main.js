@@ -68,6 +68,179 @@ async function init() {
   console.log('Fetch N Feed starting...');
   await loadData();
   renderApp();
+  
+  // Keyboard shortcuts
+  document.addEventListener('keydown', handleKeyboard);
+}
+
+function handleKeyboard(e) {
+  // Don't trigger shortcuts when typing in input fields
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
+    return;
+  }
+  
+  const feeds = getAllFeeds();
+  const allArticles = getData().articles;
+  let articles = currentFeedId 
+    ? allArticles.filter(a => a.feedId === currentFeedId)
+    : allArticles;
+  
+  // Apply current filter
+  switch (currentFilter) {
+    case 'unread': articles = articles.filter(a => !a.isRead); break;
+    case 'starred': articles = articles.filter(a => a.isStarred); break;
+    case 'archived': articles = articles.filter(a => a.isArchived); break;
+    default: articles = articles.filter(a => !a.isArchived);
+  }
+  articles = sortArticles(articles, feeds);
+  
+  const currentIndex = selectedArticle 
+    ? articles.findIndex(a => a.id === selectedArticle.id) 
+    : -1;
+  
+  switch (e.key) {
+   case 'j':
+      e.preventDefault();
+      if (articles.length > 0) {
+        const nextIndex = currentIndex < articles.length - 1 ? currentIndex + 1 : 0;
+        selectArticle(articles[nextIndex]);
+      }
+      break;
+      
+    case 'k':
+      e.preventDefault();
+      if (articles.length > 0) {
+        const prevIndex = currentIndex > 0 ? currentIndex - 1 : articles.length - 1;
+        selectArticle(articles[prevIndex]);
+      }
+      break;
+    
+    case 'ArrowDown':
+      if (e.shiftKey) {
+        e.preventDefault();
+        if (articles.length > 0) {
+          const nextIndex = currentIndex < articles.length - 1 ? currentIndex + 1 : 0;
+          selectArticle(articles[nextIndex]);
+        }
+      }
+      // Without shift, let arrow keys scroll naturally
+      break;
+      
+    case 'ArrowUp':
+      if (e.shiftKey) {
+        e.preventDefault();
+        if (articles.length > 0) {
+          const prevIndex = currentIndex > 0 ? currentIndex - 1 : articles.length - 1;
+          selectArticle(articles[prevIndex]);
+        }
+      }
+      // Without shift, let arrow keys scroll naturally
+      break;
+      
+    case 'Enter':
+    case 'o':
+      if (selectedArticle) {
+        e.preventDefault();
+        window.open(selectedArticle.url, '_blank');
+      }
+      break;
+      
+    case 's':
+      if (selectedArticle) {
+        e.preventDefault();
+        toggleArticleStar(selectedArticle.id).then(() => {
+          selectedArticle = { ...selectedArticle, isStarred: !selectedArticle.isStarred };
+          renderApp();
+        });
+      }
+      break;
+      
+    case 'a':
+      if (selectedArticle) {
+        e.preventDefault();
+        toggleArticleArchive(selectedArticle.id).then(() => {
+          selectedArticle = { ...selectedArticle, isArchived: !selectedArticle.isArchived };
+          renderApp();
+        });
+      }
+      break;
+      
+    case 'Escape':
+      if (selectedArticle) {
+        e.preventDefault();
+        selectedArticle = null;
+        renderApp();
+      }
+      break;
+      
+    case 'r':
+      if (e.metaKey || e.ctrlKey) {
+        // Allow browser refresh
+        return;
+      }
+      e.preventDefault();
+      handleRefreshAll();
+      break;
+      
+    case '?':
+      e.preventDefault();
+      showKeyboardHelp();
+      break;
+  }
+}
+
+async function selectArticle(article) {
+  await markArticleRead(article.id);
+  selectedArticle = article;
+  isLoadingArticle = true;
+  renderApp();
+  
+  const textContent = stripHtml(article.content || '');
+  const isTruncated = textContent.includes('Read the full story') || 
+                     textContent.includes('Continue reading') || 
+                     textContent.includes('Read more') || 
+                     textContent.length < 500;
+  if (!article.content || isTruncated) {
+    const result = await extractArticle(article.url);
+    if (result.success && result.content) {
+      selectedArticle = { ...article, content: result.content };
+    }
+  }
+  
+  isLoadingArticle = false;
+  renderApp();
+}
+
+function showKeyboardHelp() {
+  const helpHtml = `
+    <div id="keyboard-help" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+      <div style="background: white; border-radius: 12px; padding: 24px 32px; max-width: 400px; box-shadow: 0 8px 32px rgba(0,0,0,0.2);">
+        <h2 style="margin: 0 0 16px 0; font-size: 20px;">Keyboard Shortcuts</h2>
+        <table style="width: 100%; font-size: 14px; border-collapse: collapse;">
+          <tr><td style="padding: 8px 16px 8px 0; color: #666;">↑ / ↓</td><td style="padding: 8px 0;">Scroll in article</td></tr>
+          <tr><td style="padding: 8px 16px 8px 0; color: #666;">Shift+↑ / k</td><td style="padding: 8px 0;">Previous article</td></tr>
+          <tr><td style="padding: 8px 16px 8px 0; color: #666;">Shift+↓ / j</td><td style="padding: 8px 0;">Next article</td></tr>
+          <tr><td style="padding: 8px 16px 8px 0; color: #666;">Enter / o</td><td style="padding: 8px 0;">Open in browser</td></tr>
+          <tr><td style="padding: 8px 16px 8px 0; color: #666;">s</td><td style="padding: 8px 0;">Star / unstar</td></tr>
+          <tr><td style="padding: 8px 16px 8px 0; color: #666;">a</td><td style="padding: 8px 0;">Archive / unarchive</td></tr>
+          <tr><td style="padding: 8px 16px 8px 0; color: #666;">r</td><td style="padding: 8px 0;">Refresh all feeds</td></tr>
+          <tr><td style="padding: 8px 16px 8px 0; color: #666;">Escape</td><td style="padding: 8px 0;">Close article</td></tr>
+          <tr><td style="padding: 8px 16px 8px 0; color: #666;">?</td><td style="padding: 8px 0;">Show this help</td></tr>
+        </table>
+        <button onclick="document.getElementById('keyboard-help').remove()" style="margin-top: 20px; padding: 10px 20px; font-size: 14px; cursor: pointer; background: #007aff; color: white; border: none; border-radius: 6px; width: 100%;">
+          Close
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', helpHtml);
+  
+  // Close on click outside or Escape
+  document.getElementById('keyboard-help').addEventListener('click', (e) => {
+    if (e.target.id === 'keyboard-help') {
+      document.getElementById('keyboard-help').remove();
+    }
+  });
 }
 
 function stripHtml(html) {

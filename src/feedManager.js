@@ -301,7 +301,7 @@ export async function cleanupOldArticles() {
 }
 // ============ REFRESH ============
 
-export async function refreshFeed(feedId) {
+export async function refreshFeed(feedId, maxAgeDays = 7) {
   const data = getData();
   const feed = data.feeds.find(f => f.id === feedId);
   
@@ -312,7 +312,6 @@ export async function refreshFeed(feedId) {
   const result = await fetchFeed(feed.url);
   
   if (!result.success) {
-    // Update error count
     await updateFeed(feedId, { 
       errorCount: feed.errorCount + 1,
       lastFetchedAt: now()
@@ -329,6 +328,11 @@ export async function refreshFeed(feedId) {
     errorCount: 0,
   });
   
+  // Calculate cutoff date
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - maxAgeDays);
+  const cutoffString = cutoffDate.toISOString();
+  
   // Get existing article URLs for this feed to avoid duplicates
   const existingUrls = new Set(
     data.articles.filter(a => a.feedId === feedId).map(a => a.url)
@@ -338,28 +342,32 @@ export async function refreshFeed(feedId) {
   let newCount = 0;
   for (const item of result.feed.items) {
     if (!existingUrls.has(item.url)) {
-      await addArticle({
-        feedId: feedId,
-        title: item.title,
-        url: item.url,
-        author: item.author,
-        summary: item.summary,
-        content: item.content,
-        publishedAt: item.publishedAt,
-      });
-      newCount++;
+      // Check if article is within our time window
+      const articleDate = item.publishedAt || now();
+      if (articleDate >= cutoffString) {
+        await addArticle({
+          feedId: feedId,
+          title: item.title,
+          url: item.url,
+          author: item.author,
+          summary: item.summary,
+          content: item.content,
+          publishedAt: item.publishedAt,
+        });
+        newCount++;
+      }
     }
   }
   
   return { success: true, newArticles: newCount, totalItems: result.feed.items.length };
 }
 
-export async function refreshAllFeeds() {
+export async function refreshAllFeeds(maxAgeDays = 7) {
   const feeds = getAllFeeds().filter(f => f.isEnabled);
   const results = [];
   
   for (const feed of feeds) {
-    const result = await refreshFeed(feed.id);
+    const result = await refreshFeed(feed.id, maxAgeDays);
     results.push({ feedId: feed.id, title: feed.title, ...result });
   }
   

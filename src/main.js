@@ -1,7 +1,8 @@
 // main.js - Fetch N Feed entry point
 
 import { loadData, getData, exportData } from './database.js';
-import { addFeed, getAllFeeds, getAllArticles, getArticlesByFeed, deleteFeed, markArticleRead, toggleArticleStar, toggleArticleArchive, refreshFeed, refreshAllFeeds } from './feedManager.js';
+import { addFeed, getAllFeeds, getAllArticles, getArticlesByFeed, deleteFeed, markArticleRead, toggleArticleStar, toggleArticleArchive, refreshFeed, refreshAllFeeds, addFolder, deleteFolder, getAllFolders, updateFeed } from './feedManager.js';
+import { downloadOPML, parseOPML } from './opml.js';
 
 let currentFeedId = null;
 let currentSort = 'newest';
@@ -12,6 +13,8 @@ let articleListWidth = 350;
 let articleFontSize = 16;
 let currentLayout = 'list';
 let currentFilter = 'all'; // all, unread, starred, archived
+let currentFolderId = null;
+let expandedFolders = new Set();
 
 // Extract full article content from a URL
 async function extractArticle(url) {
@@ -242,7 +245,56 @@ function showKeyboardHelp() {
     }
   });
 }
-
+function showFolderDialog() {
+  const dialogHtml = `
+    <div id="folder-dialog" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+      <div style="background: white; border-radius: 12px; padding: 24px; width: 300px; box-shadow: 0 8px 32px rgba(0,0,0,0.2);">
+        <h3 style="margin: 0 0 16px 0; font-size: 18px;">New Folder</h3>
+        <input type="text" id="folder-name-input" placeholder="Folder name..." 
+          style="width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid #d0d0d0; border-radius: 6px; box-sizing: border-box; margin-bottom: 16px; outline: none;">
+        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+          <button id="folder-dialog-cancel" style="padding: 8px 16px; font-size: 14px; cursor: pointer; background: #e8e8e8; border: none; border-radius: 6px;">
+            Cancel
+          </button>
+          <button id="folder-dialog-create" style="padding: 8px 16px; font-size: 14px; cursor: pointer; background: #007aff; color: white; border: none; border-radius: 6px;">
+            Create
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  document.body.insertAdjacentHTML('beforeend', dialogHtml);
+  
+  const dialog = document.getElementById('folder-dialog');
+  const input = document.getElementById('folder-name-input');
+  const cancelBtn = document.getElementById('folder-dialog-cancel');
+  const createBtn = document.getElementById('folder-dialog-create');
+  
+  input.focus();
+  
+  const closeDialog = () => dialog.remove();
+  
+  const createFolder = async () => {
+    const name = input.value.trim();
+    if (name) {
+      await addFolder(name);
+      closeDialog();
+      renderApp();
+    }
+  };
+  
+  cancelBtn.addEventListener('click', closeDialog);
+  createBtn.addEventListener('click', createFolder);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') createFolder();
+    if (e.key === 'Escape') closeDialog();
+  });
+  
+  dialog.addEventListener('click', (e) => {
+    if (e.target === dialog) closeDialog();
+  });
+}
 function stripHtml(html) {
   if (!html) return '';
   const tmp = document.createElement('div');
@@ -339,9 +391,29 @@ function renderApp() {
           </button>
         </div>
         
-        <button id="btn-refresh-all" style="width: 100%; padding: 10px; font-size: 14px; font-weight: 500; cursor: pointer; margin-bottom: 20px; background: #34c759; color: white; border: none; border-radius: 6px;">
-          ↻ Refresh All Feeds
-        </button>
+        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+          <button id="btn-refresh-all" style="flex: 1; padding: 10px; font-size: 14px; font-weight: 500; cursor: pointer; background: #34c759; color: white; border: none; border-radius: 6px;">
+            ↻ Refresh
+          </button>
+          <select id="fetch-age-select" style="padding: 8px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 6px; background: white; cursor: pointer;">
+            <option value="1">24 hours</option>
+            <option value="7" selected>7 days</option>
+            <option value="14">2 weeks</option>
+            <option value="30">1 month</option>
+            <option value="90">3 months</option>
+          </select>
+        </div>
+        
+        <div style="display: flex; gap: 8px; margin-bottom: 20px;">
+          <button id="btn-import-opml" style="flex: 1; padding: 8px; font-size: 12px; cursor: pointer; background: #e8e8e8; color: #333; border: none; border-radius: 6px;">
+            📥 Import
+          </button>
+          <button id="btn-export-opml" style="flex: 1; padding: 8px; font-size: 12px; cursor: pointer; background: #e8e8e8; color: #333; border: none; border-radius: 6px;">
+            📤 Export
+          </button>
+        </div>
+        
+        <input type="file" id="opml-file-input" accept=".opml,.xml" style="display: none;">
         
       ${(() => {
           const allArticles = getData().articles;
@@ -377,6 +449,12 @@ function renderApp() {
           `;
         })()}
         
+        <div style="display: flex; justify-content: space-between; align-items: center; margin: 16px 0 8px 0;">
+          <span style="font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">Folders</span>
+          <button id="btn-add-folder" style="background: none; border: none; color: #007aff; cursor: pointer; font-size: 16px; padding: 0 4px;" title="New Folder">+</button>
+        </div>
+        <div id="folders-list"></div>
+        
         <div style="font-size: 11px; color: #888; margin: 16px 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;">Feeds</div>
         <div id="feeds-list"></div>
       </div>
@@ -388,7 +466,12 @@ function renderApp() {
         <div id="article-list-panel" style="width: ${selectedArticle && currentLayout !== 'inline' ? articleListWidth + 'px' : '100%'}; display: flex; flex-direction: column; overflow: hidden; background: #fafafa; flex-shrink: 0;">
           
           <div style="padding: 12px 16px; background: #ffffff; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
-            <div id="status-bar" style="font-size: 14px; color: #666;"></div>
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <div id="status-bar" style="font-size: 14px; color: #666;"></div>
+              <button id="btn-mark-all-read" style="padding: 4px 8px; font-size: 11px; cursor: pointer; background: #e8e8e8; color: #555; border: none; border-radius: 4px; white-space: nowrap;">
+                ✓ Mark All Read
+              </button>
+            </div>
             <div style="display: flex; align-items: center; gap: 12px;">
               <div style="display: flex; align-items: center; gap: 4px;">
                 <label style="font-size: 12px; color: #666;">View:</label>
@@ -471,6 +554,70 @@ function renderApp() {
   
   document.getElementById('btn-add-feed').addEventListener('click', handleAddFeed);
   document.getElementById('btn-refresh-all').addEventListener('click', handleRefreshAll);
+  
+  document.getElementById('btn-export-opml').addEventListener('click', () => {
+    const feeds = getAllFeeds();
+    if (feeds.length === 0) {
+      alert('No feeds to export');
+      return;
+    }
+    downloadOPML(feeds);
+  });
+  
+  document.getElementById('btn-import-opml').addEventListener('click', () => {
+    document.getElementById('opml-file-input').click();
+  });
+  
+  document.getElementById('opml-file-input').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    const statusBar = document.getElementById('status-bar');
+    statusBar.textContent = 'Importing feeds...';
+    
+    try {
+      const text = await file.text();
+      const feedsToImport = parseOPML(text);
+      
+      if (feedsToImport.length === 0) {
+        statusBar.textContent = 'No feeds found in OPML file';
+        return;
+      }
+      
+      const existingUrls = new Set(getAllFeeds().map(f => f.url));
+      let imported = 0;
+      let skipped = 0;
+      
+      for (const feed of feedsToImport) {
+        if (existingUrls.has(feed.url)) {
+          skipped++;
+        } else {
+          await addFeed(feed.url, feed.title);
+          imported++;
+        }
+      }
+      
+      statusBar.textContent = `Imported ${imported} feeds${skipped > 0 ? `, ${skipped} already existed` : ''}. Fetching articles...`;
+      renderApp();
+      
+      // Auto-refresh to fetch articles
+      if (imported > 0) {
+        const results = await refreshAllFeeds();
+        const totalNew = results.reduce((sum, r) => sum + (r.newArticles || 0), 0);
+        statusBar.textContent = `Imported ${imported} feeds with ${totalNew} articles${skipped > 0 ? `, ${skipped} already existed` : ''}`;
+        renderArticles();
+      }
+    } catch (err) {
+      console.error('OPML import error:', err);
+      statusBar.textContent = 'Error importing OPML: ' + err.message;
+    }
+    
+    // Reset file input
+    e.target.value = '';
+  });
+  document.getElementById('btn-add-folder').addEventListener('click', () => {
+    showFolderDialog();
+  });
   document.getElementById('btn-all-articles').addEventListener('click', (e) => {
     e.preventDefault();
     currentFeedId = null;
@@ -511,7 +658,41 @@ function renderApp() {
     selectedArticle = null;
     renderApp();
   });
+  document.getElementById('fetch-age-select').addEventListener('change', () => {
+    renderArticles();
+  });
   
+  document.getElementById('btn-mark-all-read').addEventListener('click', async () => {
+    const feeds = getAllFeeds();
+    const allArticlesRaw = getData().articles;
+    let articles;
+    
+    if (currentFeedId) {
+      articles = allArticlesRaw.filter(a => a.feedId === currentFeedId);
+    } else if (currentFolderId) {
+      const folderFeeds = feeds.filter(f => f.folderIds && f.folderIds.includes(currentFolderId));
+      const folderFeedIds = new Set(folderFeeds.map(f => f.id));
+      articles = allArticlesRaw.filter(a => folderFeedIds.has(a.feedId));
+    } else {
+      articles = allArticlesRaw;
+    }
+    
+    // Apply current filter
+    switch (currentFilter) {
+      case 'unread': articles = articles.filter(a => !a.isRead); break;
+      case 'starred': articles = articles.filter(a => a.isStarred); break;
+      case 'archived': articles = articles.filter(a => a.isArchived); break;
+      default: articles = articles.filter(a => !a.isArchived);
+    }
+    
+    for (const article of articles) {
+      if (!article.isRead) {
+        await markArticleRead(article.id);
+      }
+    }
+    
+    renderApp();
+  });
   const closeBtn = document.getElementById('btn-close-article');
   if (closeBtn) closeBtn.addEventListener('click', () => { selectedArticle = null; renderApp(); });
   
@@ -620,7 +801,130 @@ function renderApp() {
       document.addEventListener('mouseup', onMouseUp);
     });
   }
+  function renderFoldersList() {
+  const container = document.getElementById('folders-list');
+  const folders = getAllFolders();
+  const feeds = getAllFeeds();
+  const allArticles = getData().articles;
   
+  if (folders.length === 0) {
+    container.innerHTML = '<div style="color: #999; font-size: 12px; padding: 4px 12px; font-style: italic;">No folders yet</div>';
+    return;
+  }
+  
+  container.innerHTML = folders.map(folder => {
+    const folderFeeds = feeds.filter(f => f.folderIds && f.folderIds.includes(folder.id));
+    const isExpanded = expandedFolders.has(folder.id);
+    const isSelected = currentFolderId === folder.id;
+    
+    // Count articles in folder
+    const folderArticleCount = folderFeeds.reduce((sum, feed) => {
+      return sum + allArticles.filter(a => a.feedId === feed.id && !a.isArchived).length;
+    }, 0);
+    
+    let html = `
+      <div style="margin-bottom: 2px;">
+        <div class="folder-header" data-folder-id="${folder.id}" 
+          style="display: flex; align-items: center; padding: 8px 12px; background: ${isSelected ? '#007aff' : 'transparent'}; color: ${isSelected ? 'white' : '#333'}; border-radius: 6px; cursor: pointer;"
+          onmouseover="this.style.background='${isSelected ? '#007aff' : '#f0f0f0'}'" 
+          onmouseout="this.style.background='${isSelected ? '#007aff' : 'transparent'}'">
+          <span style="margin-right: 8px; font-size: 12px;">${isExpanded ? '▼' : '▶'}</span>
+          <span style="flex: 1; font-size: 14px;">📁 ${folder.name}</span>
+          <span style="color: ${isSelected ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px; margin-right: 8px;">${folderArticleCount}</span>
+          <button class="btn-delete-folder" data-folder-id="${folder.id}" 
+            style="background: none; border: none; color: ${isSelected ? 'rgba(255,255,255,0.7)' : '#ccc'}; cursor: pointer; padding: 0 4px; font-size: 14px;"
+            onmouseover="this.style.color='#ff3b30'" onmouseout="this.style.color='${isSelected ? 'rgba(255,255,255,0.7)' : '#ccc'}'">×</button>
+        </div>
+    `;
+    
+    if (isExpanded && folderFeeds.length > 0) {
+      html += '<div style="margin-left: 20px;">';
+      folderFeeds.forEach(feed => {
+        const articleCount = allArticles.filter(a => a.feedId === feed.id && !a.isArchived).length;
+        html += `
+          <div style="display: flex; align-items: center; margin-bottom: 2px;">
+            <a href="#" class="feed-link" data-feed-id="${feed.id}" 
+              style="flex: 1; padding: 6px 12px; background: ${currentFeedId === feed.id ? '#007aff' : 'transparent'}; color: ${currentFeedId === feed.id ? 'white' : '#555'}; text-decoration: none; border-radius: 4px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              ${feed.title} <span style="color: ${currentFeedId === feed.id ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 11px;">(${articleCount})</span>
+            </a>
+            <button class="btn-remove-from-folder" data-feed-id="${feed.id}" data-folder-id="${folder.id}"
+              style="background: none; border: none; color: #ccc; cursor: pointer; padding: 2px 6px; font-size: 12px;"
+              onmouseover="this.style.color='#ff3b30'" onmouseout="this.style.color='#ccc'" title="Remove from folder">×</button>
+          </div>
+        `;
+      });
+      html += '</div>';
+    } else if (isExpanded) {
+      html += '<div style="margin-left: 20px; padding: 6px 12px; color: #999; font-size: 12px; font-style: italic;">No feeds in folder</div>';
+    }
+    
+    html += '</div>';
+    return html;
+  }).join('');
+  
+  // Event listeners for folders
+  document.querySelectorAll('.folder-header').forEach(header => {
+    header.addEventListener('click', (e) => {
+      if (e.target.classList.contains('btn-delete-folder')) return;
+      
+      const folderId = header.dataset.folderId;
+      
+      if (e.target.tagName === 'SPAN' && e.target.textContent.match(/[▼▶]/)) {
+        // Toggle expand/collapse
+        if (expandedFolders.has(folderId)) {
+          expandedFolders.delete(folderId);
+        } else {
+          expandedFolders.add(folderId);
+        }
+        renderFoldersList();
+      } else {
+        // Select folder to view its articles
+        currentFolderId = currentFolderId === folderId ? null : folderId;
+        currentFeedId = null;
+        currentFilter = 'all';
+        selectedArticle = null;
+        renderApp();
+      }
+    });
+  });
+  
+  document.querySelectorAll('.btn-delete-folder').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const folderId = btn.dataset.folderId;
+      await deleteFolder(folderId);
+      if (currentFolderId === folderId) currentFolderId = null;
+      renderApp();
+    });
+  });
+  
+  document.querySelectorAll('.btn-remove-from-folder').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const feedId = btn.dataset.feedId;
+      const folderId = btn.dataset.folderId;
+      const feed = getAllFeeds().find(f => f.id === feedId);
+      if (feed) {
+        const newFolderIds = (feed.folderIds || []).filter(id => id !== folderId);
+        await updateFeed(feedId, { folderIds: newFolderIds });
+        renderApp();
+      }
+    });
+  });
+  
+  // Feed links inside folders
+  document.querySelectorAll('#folders-list .feed-link').forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      currentFeedId = link.dataset.feedId;
+      currentFolderId = null;
+      currentFilter = 'all';
+      selectedArticle = null;
+      renderApp();
+    });
+  });
+}
+  renderFoldersList();
   renderFeedsList();
   renderArticles();
 }
@@ -628,6 +932,8 @@ function renderApp() {
 function renderFeedsList() {
   const container = document.getElementById('feeds-list');
   const feeds = getAllFeeds();
+  const folders = getAllFolders();
+  const allArticles = getData().articles;
   
   if (feeds.length === 0) {
     container.innerHTML = '<div style="color: #999; font-size: 14px; padding: 8px 12px;">No feeds yet</div>';
@@ -635,13 +941,15 @@ function renderFeedsList() {
   }
   
   container.innerHTML = feeds.map(feed => {
-    const articleCount = getArticlesByFeed(feed.id).length;
+    const articleCount = allArticles.filter(a => a.feedId === feed.id && !a.isArchived).length;
+    const unreadCount = allArticles.filter(a => a.feedId === feed.id && !a.isRead && !a.isArchived).length;
     return `
       <div style="display: flex; align-items: center; margin-bottom: 2px;">
         <a href="#" class="feed-link" data-feed-id="${feed.id}" 
           style="flex: 1; padding: 10px 12px; background: ${currentFeedId === feed.id ? '#007aff' : 'transparent'}; color: ${currentFeedId === feed.id ? 'white' : '#333'}; text-decoration: none; border-radius: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px;">
-          ${feed.title} <span style="color: ${currentFeedId === feed.id ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">(${articleCount})</span>
+          ${feed.title} <span style="color: ${currentFeedId === feed.id ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">(${unreadCount}/${articleCount})</span>
         </a>
+        <button class="btn-feed-menu" data-feed-id="${feed.id}" style="background: none; border: none; color: #ccc; cursor: pointer; padding: 4px 6px; font-size: 14px;" onmouseover="this.style.color='#007aff'" onmouseout="this.style.color='#ccc'" title="Add to folder">📁</button>
         <button class="btn-delete-feed" data-feed-id="${feed.id}" style="background: none; border: none; color: #ccc; cursor: pointer; padding: 4px 8px; font-size: 16px;" onmouseover="this.style.color='#ff3b30'" onmouseout="this.style.color='#ccc'">×</button>
       </div>
     `;
@@ -651,6 +959,8 @@ function renderFeedsList() {
     link.addEventListener('click', (e) => {
       e.preventDefault();
       currentFeedId = e.target.closest('.feed-link').dataset.feedId;
+      currentFolderId = null;
+      currentFilter = 'all';
       selectedArticle = null;
       renderApp();
     });
@@ -668,6 +978,74 @@ function renderFeedsList() {
       }
     });
   });
+  
+  document.querySelectorAll('.btn-feed-menu').forEach(btn => {
+    btn.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const feedId = this.getAttribute('data-feed-id');
+      const feed = feeds.find(f => f.id === feedId);
+      
+      // Remove any existing menu
+      const existingMenu = document.getElementById('folder-menu');
+      if (existingMenu) existingMenu.remove();
+      
+      if (folders.length === 0) {
+        alert('Create a folder first');
+        return;
+      }
+      
+      // Create menu
+      const rect = this.getBoundingClientRect();
+      const menu = document.createElement('div');
+      menu.id = 'folder-menu';
+      menu.style.cssText = `position: fixed; top: ${rect.bottom + 4}px; left: ${rect.left - 100}px; background: white; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); padding: 8px 0; z-index: 1000; min-width: 150px;`;
+      
+      menu.innerHTML = folders.map(folder => {
+        const isInFolder = feed.folderIds && feed.folderIds.includes(folder.id);
+        return `
+          <div class="folder-menu-item" data-folder-id="${folder.id}" data-feed-id="${feedId}"
+            style="padding: 8px 16px; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 8px;"
+            onmouseover="this.style.background='#f0f0f0'" onmouseout="this.style.background='transparent'">
+            <span style="width: 16px;">${isInFolder ? '✓' : ''}</span>
+            <span>📁 ${folder.name}</span>
+          </div>
+        `;
+      }).join('');
+      
+      document.body.appendChild(menu);
+      
+      // Handle folder selection
+      menu.querySelectorAll('.folder-menu-item').forEach(item => {
+        item.addEventListener('click', async () => {
+          const folderId = item.dataset.folderId;
+          const feedId = item.dataset.feedId;
+          const feed = getAllFeeds().find(f => f.id === feedId);
+          
+          let newFolderIds = feed.folderIds || [];
+          if (newFolderIds.includes(folderId)) {
+            newFolderIds = newFolderIds.filter(id => id !== folderId);
+          } else {
+            newFolderIds = [...newFolderIds, folderId];
+          }
+          
+          await updateFeed(feedId, { folderIds: newFolderIds });
+          menu.remove();
+          renderApp();
+        });
+      });
+      
+      // Close menu on outside click
+      setTimeout(() => {
+        document.addEventListener('click', function closeMenu(e) {
+          if (!menu.contains(e.target)) {
+            menu.remove();
+            document.removeEventListener('click', closeMenu);
+          }
+        });
+      }, 0);
+    });
+  });
 }
 
 function renderArticles() {
@@ -678,9 +1056,17 @@ function renderArticles() {
   
   // Get all articles (we'll filter ourselves)
   const allArticlesRaw = getData().articles;
-  let articles = currentFeedId 
-    ? allArticlesRaw.filter(a => a.feedId === currentFeedId)
-    : allArticlesRaw;
+  let articles;
+  
+  if (currentFeedId) {
+    articles = allArticlesRaw.filter(a => a.feedId === currentFeedId);
+  } else if (currentFolderId) {
+    const folderFeeds = feeds.filter(f => f.folderIds && f.folderIds.includes(currentFolderId));
+    const folderFeedIds = new Set(folderFeeds.map(f => f.id));
+    articles = allArticlesRaw.filter(a => folderFeedIds.has(a.feedId));
+  } else {
+    articles = allArticlesRaw;
+  }
   
   // Apply filter
   switch (currentFilter) {
@@ -695,6 +1081,16 @@ function renderArticles() {
       break;
     default:
       articles = articles.filter(a => !a.isArchived);
+  }
+  
+  // Apply time filter
+  const fetchAgeSelect = document.getElementById('fetch-age-select');
+  if (fetchAgeSelect) {
+    const maxAgeDays = parseInt(fetchAgeSelect.value) || 7;
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - maxAgeDays);
+    const cutoffString = cutoffDate.toISOString();
+    articles = articles.filter(a => (a.publishedAt || a.fetchedAt) >= cutoffString);
   }
   
   articles = sortArticles(articles, feeds);
@@ -947,8 +1343,10 @@ async function handleRefreshAll() {
   
   if (feeds.length === 0) { statusBar.textContent = 'No feeds to refresh. Add a feed first!'; return; }
   
+  const maxAgeDays = parseInt(document.getElementById('fetch-age-select').value) || 7;
+  
   statusBar.textContent = 'Refreshing all feeds...';
-  const results = await refreshAllFeeds();
+  const results = await refreshAllFeeds(maxAgeDays);
   const totalNew = results.reduce((sum, r) => sum + (r.newArticles || 0), 0);
   const failures = results.filter(r => !r.success).length;
   

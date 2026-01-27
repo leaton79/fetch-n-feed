@@ -93,7 +93,7 @@ function parseDate(dateStr) {
 export async function fetchFeed(url) {
   try {
     // Use a CORS proxy for fetching feeds
-    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
     
     const response = await fetch(proxyUrl);
     if (!response.ok) {

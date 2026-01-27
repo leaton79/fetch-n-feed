@@ -7,7 +7,10 @@ import { addFeed, getAllFeeds, getAllArticles, getArticlesByFeed, deleteFeed, ma
 let currentFeedId = null;
 let currentSort = 'newest';
 let selectedArticle = null;
-let isLoadingArticle = false; // newest, oldest, feedAZ, feedZA, random
+let isLoadingArticle = false;
+let sidebarWidth = 260;
+let articleListWidth = 350;
+let articleFontSize = 16; // newest, oldest, feedAZ, feedZA, random
 // Generate a consistent color for each feed
 function getFeedColor(feedId) {
   const colors = ['#007aff', '#34c759', '#ff9500', '#ff3b30', '#af52de', '#5856d6', '#00c7be', '#ff2d55'];
@@ -126,7 +129,7 @@ function renderApp() {
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; height: 100vh; background: #fafafa;">
       
       <!-- Sidebar -->
-      <div style="width: 260px; background: #ffffff; padding: 16px; border-right: 1px solid #e0e0e0; overflow-y: auto; flex-shrink: 0;">
+      <div id="sidebar" style="width: ${sidebarWidth}px; background: #ffffff; padding: 16px; border-right: none; overflow-y: auto; flex-shrink: 0; position: relative;">
         <h2 style="margin: 0 0 20px 0; font-size: 20px; font-weight: 600; color: #1a1a1a;">Fetch N Feed</h2>
         
         <div style="margin-bottom: 20px;">
@@ -148,16 +151,19 @@ function renderApp() {
           </a>
         </div>
         
-        <div style="font-size: 11px; color: #888; margin: 16px 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;">Feeds</div>
+       <div style="font-size: 11px; color: #888; margin: 16px 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;">Feeds</div>
         <div id="feeds-list"></div>
       </div>
+      
+      <!-- Sidebar Resize Handle -->
+      <div id="sidebar-resize" style="width: 5px; background: #e0e0e0; cursor: col-resize; flex-shrink: 0; transition: background 0.15s;" onmouseover="this.style.background='#007aff'" onmouseout="this.style.background='#e0e0e0'"></div>
       
       <!-- Main Content -->
       <div style="flex: 1; display: flex; overflow: hidden;">
         
         <!-- Articles List Panel -->
-        <div style="width: ${selectedArticle ? '350px' : '100%'}; display: flex; flex-direction: column; overflow: hidden; background: #fafafa; border-right: ${selectedArticle ? '1px solid #e0e0e0' : 'none'}; transition: width 0.2s;">
-          
+        <div id="article-list-panel" style="width: ${selectedArticle ? articleListWidth + 'px' : '100%'}; display: flex; flex-direction: column; overflow: hidden; background: #fafafa; border-right: none; flex-shrink: 0;">
+
           <!-- Header Bar -->
           <div style="padding: 12px 16px; background: #ffffff; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
             <div id="status-bar" style="font-size: 14px; color: #666;"></div>
@@ -177,16 +183,24 @@ function renderApp() {
           <div id="articles-list" style="flex: 1; overflow-y: auto; padding: 12px;"></div>
         </div>
         
+        <!-- Article List Resize Handle -->
+        ${selectedArticle ? `<div id="articlelist-resize" style="width: 5px; background: #e0e0e0; cursor: col-resize; flex-shrink: 0; transition: background 0.15s;" onmouseover="this.style.background='#007aff'" onmouseout="this.style.background='#e0e0e0'"></div>` : ''}
+        
         <!-- Reading Pane -->
         ${selectedArticle ? `
         <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #ffffff;">
           
-         <!-- Reading Pane Header -->
+        <!-- Reading Pane Header -->
           <div style="padding: 12px 20px; background: #f8f8f8; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
             <button id="btn-close-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #e8e8e8; border: none; border-radius: 4px;">
               ← Back
             </button>
-            <div style="display: flex; gap: 8px;">
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <div style="display: flex; align-items: center; gap: 4px; background: #e8e8e8; border-radius: 4px; padding: 2px;">
+                <button id="btn-font-decrease" style="padding: 4px 10px; font-size: 14px; cursor: pointer; background: transparent; border: none; border-radius: 3px;" title="Decrease text size">A-</button>
+                <span style="font-size: 12px; color: #666; min-width: 35px; text-align: center;">${articleFontSize}px</span>
+                <button id="btn-font-increase" style="padding: 4px 10px; font-size: 14px; cursor: pointer; background: transparent; border: none; border-radius: 3px;" title="Increase text size">A+</button>
+              </div>
               <button id="btn-share-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #34c759; color: white; border: none; border-radius: 4px;">
                 📋 Share
               </button>
@@ -210,7 +224,7 @@ function renderApp() {
                 ${selectedArticle.author ? `<span>${stripHtml(selectedArticle.author)}</span> • ` : ''}
                 ${selectedArticle.publishedAt ? new Date(selectedArticle.publishedAt).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : ''}
               </div>
-              <div style="font-size: 16px; line-height: 1.7; color: #333;">
+              <div id="article-text" style="font-size: ${articleFontSize}px; line-height: 1.7; color: #333;">
                 ${formatArticleContent(selectedArticle.content || selectedArticle.summary || 'No content available.')}
               </div>
             `}
@@ -253,21 +267,81 @@ function renderApp() {
     });
   }
   
-  const shareBtn = document.getElementById('btn-share-article');
-  if (shareBtn) {
-    shareBtn.addEventListener('click', async () => {
-      if (selectedArticle) {
-        const shareText = `${stripHtml(selectedArticle.title)}\n${selectedArticle.url}`;
-        try {
-          await navigator.clipboard.writeText(shareText);
-          shareBtn.textContent = '✓ Copied!';
-          setTimeout(() => {
-            shareBtn.textContent = '📋 Share';
-          }, 2000);
-        } catch (err) {
-          console.error('Failed to copy:', err);
+  // Resizable sidebar
+  const sidebarResize = document.getElementById('sidebar-resize');
+  if (sidebarResize) {
+    sidebarResize.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = sidebarWidth;
+      
+      const onMouseMove = (e) => {
+        const newWidth = startWidth + (e.clientX - startX);
+        if (newWidth >= 150 && newWidth <= 500) {
+          sidebarWidth = newWidth;
+          document.getElementById('sidebar').style.width = newWidth + 'px';
         }
+      };
+      
+      const onMouseUp = () => {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+      };
+      
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
+  }
+ // Font size controls
+  const fontDecreaseBtn = document.getElementById('btn-font-decrease');
+  if (fontDecreaseBtn) {
+    fontDecreaseBtn.addEventListener('click', () => {
+      if (articleFontSize > 12) {
+        articleFontSize -= 2;
+        const textEl = document.getElementById('article-text');
+        if (textEl) textEl.style.fontSize = articleFontSize + 'px';
+        const sizeLabel = fontDecreaseBtn.nextElementSibling;
+        if (sizeLabel) sizeLabel.textContent = articleFontSize + 'px';
       }
+    });
+  }
+  
+  const fontIncreaseBtn = document.getElementById('btn-font-increase');
+  if (fontIncreaseBtn) {
+    fontIncreaseBtn.addEventListener('click', () => {
+      if (articleFontSize < 28) {
+        articleFontSize += 2;
+        const textEl = document.getElementById('article-text');
+        if (textEl) textEl.style.fontSize = articleFontSize + 'px';
+        const sizeLabel = fontIncreaseBtn.previousElementSibling;
+        if (sizeLabel) sizeLabel.textContent = articleFontSize + 'px';
+      }
+    });
+  }
+
+  // Resizable article list
+  const articleListResize = document.getElementById('articlelist-resize');
+  if (articleListResize) {
+    articleListResize.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = articleListWidth;
+      
+      const onMouseMove = (e) => {
+        const newWidth = startWidth + (e.clientX - startX);
+        if (newWidth >= 250 && newWidth <= 600) {
+          articleListWidth = newWidth;
+          document.getElementById('article-list-panel').style.width = newWidth + 'px';
+        }
+      };
+      
+      const onMouseUp = () => {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+      };
+      
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
     });
   }
   renderFeedsList();

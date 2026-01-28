@@ -168,6 +168,38 @@ export async function toggleArticleArchive(id) {
   await updateData({ articles: newArticles });
   return isNowArchived;
 }
+export async function deleteArticle(id) {
+  const data = getData();
+  const article = data.articles.find(a => a.id === id);
+  if (!article) return;
+  
+  // Add URL to deleted list so it won't come back on refresh
+  const deletedUrls = data.deletedArticleUrls || [];
+  if (!deletedUrls.includes(article.url)) {
+    deletedUrls.push(article.url);
+  }
+  
+  // Remove the article
+  const updatedArticles = data.articles.filter(a => a.id !== id);
+  await updateData({ articles: updatedArticles, deletedArticleUrls: deletedUrls });
+}
+
+export async function deleteMultipleArticles(ids) {
+  const data = getData();
+  const articlesToDelete = data.articles.filter(a => ids.includes(a.id));
+  
+  // Add URLs to deleted list
+  const deletedUrls = data.deletedArticleUrls || [];
+  for (const article of articlesToDelete) {
+    if (!deletedUrls.includes(article.url)) {
+      deletedUrls.push(article.url);
+    }
+  }
+  
+  // Remove the articles
+  const updatedArticles = data.articles.filter(a => !ids.includes(a.id));
+  await updateData({ articles: updatedArticles, deletedArticleUrls: deletedUrls });
+}
 export function getArticle(id) {
   return getData().articles.find(a => a.id === id);
 }
@@ -333,15 +365,18 @@ export async function refreshFeed(feedId, maxAgeDays = 7) {
   cutoffDate.setDate(cutoffDate.getDate() - maxAgeDays);
   const cutoffString = cutoffDate.toISOString();
   
-  // Get existing article URLs for this feed to avoid duplicates
+ // Get existing article URLs for this feed to avoid duplicates
   const existingUrls = new Set(
     data.articles.filter(a => a.feedId === feedId).map(a => a.url)
   );
   
+  // Get deleted article URLs to skip
+  const deletedUrls = new Set(data.deletedArticleUrls || []);
+  
   // Add new articles
   let newCount = 0;
   for (const item of result.feed.items) {
-    if (!existingUrls.has(item.url)) {
+    if (!existingUrls.has(item.url) && !deletedUrls.has(item.url)) {
       // Check if article is within our time window
       const articleDate = item.publishedAt || now();
       if (articleDate >= cutoffString) {

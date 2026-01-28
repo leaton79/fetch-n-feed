@@ -1,9 +1,10 @@
 // main.js - Fetch N Feed entry point
 
-import { loadData, getData, exportData } from './database.js';
-import { addFeed, getAllFeeds, getAllArticles, getArticlesByFeed, deleteFeed, markArticleRead, toggleArticleStar, toggleArticleArchive, refreshFeed, refreshAllFeeds, addFolder, deleteFolder, getAllFolders, updateFeed, addNote, updateNote, deleteNote, deleteMultipleNotes, getAllNotes, getNotesByTag, getAllNoteTags, addNoteTag, deleteNoteTag, generateAPACitation, exportNotesToText } from './feedManager.js';
+import { loadData, getData, updateData, exportData } from './database.js';
+import { addFeed, getAllFeeds, getAllArticles, getArticlesByFeed, deleteFeed, markArticleRead, toggleArticleStar, toggleArticleArchive, deleteArticle, deleteMultipleArticles, refreshFeed, refreshAllFeeds, addFolder, deleteFolder, getAllFolders, updateFeed, addNote, updateNote, deleteNote, deleteMultipleNotes, getAllNotes, getNotesByTag, getAllNoteTags, addNoteTag, deleteNoteTag, generateAPACitation, exportNotesToText } from './feedManager.js';
 import { downloadOPML, parseOPML } from './opml.js';
 
+let savedArticleListScroll = 0;
 let currentFeedId = null;
 let currentSort = 'newest';
 let selectedArticle = null;
@@ -23,47 +24,113 @@ let editingNote = null;
 let searchQuery = '';
 let notesSearchQuery = '';
 let fetchAgeDays = 7;
-
+let feedSearchQuery = '';
+let selectedArticles = new Set();
 // Extract full article content from a URL
 async function extractArticle(url) {
-  try {
-    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-    const response = await fetch(proxyUrl);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    
-    const html = await response.text();
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
-    
-    const removeSelectors = ['script', 'style', 'nav', 'header', 'footer', 'aside', '.sidebar', '.comments', '.ad', '.advertisement'];
-    removeSelectors.forEach(sel => doc.querySelectorAll(sel).forEach(el => el.remove()));
-    
-    const contentSelectors = ['article', '[role="main"]', 'main', '.post-content', '.article-content', '.entry-content', '.content', '.post-body'];
-    let contentEl = null;
-    for (const sel of contentSelectors) {
-      contentEl = doc.querySelector(sel);
-      if (contentEl && contentEl.textContent.trim().length > 200) break;
-    }
-    if (!contentEl) contentEl = doc.body;
-    
-    const blocks = contentEl.querySelectorAll('p, h1, h2, h3, h4, li, blockquote');
-    let content = '';
-    blocks.forEach(block => {
-      const text = block.textContent.trim();
-      if (text.length > 20) {
-        const tag = block.tagName.toLowerCase();
-        if (tag.startsWith('h')) content += `\n\n## ${text}\n\n`;
-        else if (tag === 'blockquote') content += `\n> ${text}\n`;
-        else if (tag === 'li') content += `• ${text}\n`;
-        else content += `${text}\n\n`;
+  const proxies = [
+    `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+  ];
+  
+  for (const proxyUrl of proxies) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      
+      const response = await fetch(proxyUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      
+      const html = await response.text();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      
+      // Remove unwanted elements
+      const removeSelectors = ['script', 'style', 'nav', 'header', 'footer', 'aside', '.sidebar', '.comments', '.ad', '.advertisement', 'iframe', 'noscript'];
+      removeSelectors.forEach(sel => doc.querySelectorAll(sel).forEach(el => el.remove()));
+      
+      // Find main content
+      const contentSelectors = ['article', '[role="main"]', 'main', '.post-content', '.article-content', '.entry-content', '.content', '.post-body'];
+      let contentEl = null;
+      for (const sel of contentSelectors) {
+        contentEl = doc.querySelector(sel);
+        if (contentEl && contentEl.textContent.trim().length > 200) break;
       }
-    });
-    
-    return { success: true, content: content.trim() || contentEl.textContent.trim().substring(0, 10000) };
-  } catch (error) {
-    console.error('Extract failed:', error);
-    return { success: false, error: error.message };
+      if (!contentEl) contentEl = doc.body;
+      
+      // Process images - make responsive and use absolute URLs
+      contentEl.querySelectorAll('img').forEach(img => {
+        let src = img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-lazy-src');
+        if (src) {
+          // Convert relative URLs to absolute
+          if (src.startsWith('/')) {
+            const urlObj = new URL(url);
+            src = urlObj.origin + src;
+          } else if (!src.startsWith('http')) {
+            const urlObj = new URL(url);
+            src = urlObj.origin + '/' + src;
+          }
+          img.setAttribute('src', src);
+        }
+        img.removeAttribute('width');
+        img.removeAttribute('height');
+        img.removeAttribute('style');
+        img.setAttribute('style', 'max-width: 100%; height: auto; border-radius: 8px; margin: 16px 0; display: block;');
+      });
+      
+      // Process links - make absolute and open in new tab
+      contentEl.querySelectorAll('a').forEach(link => {
+        let href = link.getAttribute('href');
+        if (href) {
+          if (href.startsWith('/')) {
+            const urlObj = new URL(url);
+            href = urlObj.origin + href;
+          } else if (!href.startsWith('http') && !href.startsWith('#') && !href.startsWith('mailto:')) {
+            const urlObj = new URL(url);
+            href = urlObj.origin + '/' + href;
+          }
+          link.setAttribute('href', href);
+          link.setAttribute('target', '_blank');
+          link.setAttribute('rel', 'noopener noreferrer');
+          link.setAttribute('style', 'color: #007aff; text-decoration: underline;');
+        }
+      });
+      
+      // Extract content blocks preserving HTML
+      const blocks = contentEl.querySelectorAll('p, h1, h2, h3, h4, li, blockquote, figure, img');
+      let content = '';
+      blocks.forEach(block => {
+        const tag = block.tagName.toLowerCase();
+        if (tag === 'img') {
+          content += block.outerHTML;
+        } else if (tag === 'figure') {
+          content += block.outerHTML;
+        } else if (block.textContent.trim().length > 20 || block.querySelector('img')) {
+          if (tag.startsWith('h')) {
+            content += `<h2 style="font-size: 20px; font-weight: 600; margin: 24px 0 12px 0;">${block.innerHTML}</h2>`;
+          } else if (tag === 'blockquote') {
+            content += `<blockquote style="border-left: 3px solid #ddd; padding-left: 16px; margin: 16px 0; color: #555; font-style: italic;">${block.innerHTML}</blockquote>`;
+          } else if (tag === 'li') {
+            content += `<p style="margin: 0 0 8px 0;">• ${block.innerHTML}</p>`;
+          } else {
+            content += `<p style="margin: 0 0 16px 0;">${block.innerHTML}</p>`;
+          }
+        }
+      });
+      
+      if (content.length > 100) {
+        return { success: true, content: content };
+      }
+      throw new Error('Content too short');
+    } catch (error) {
+      console.error('Extract failed:', error.message);
+      continue;
+    }
   }
+  
+  return { success: false, error: 'All proxies failed' };
 }
 
 function getFeedColor(feedId) {
@@ -199,8 +266,11 @@ function handleKeyboard(e) {
       break;
   }
 }
-
 async function selectArticle(article) {
+  // Save scroll position to global variable before re-render
+  const articleList = document.getElementById('articles-list');
+  savedArticleListScroll = articleList ? articleList.scrollTop : 0;
+  
   await markArticleRead(article.id);
   selectedArticle = article;
   isLoadingArticle = true;
@@ -523,6 +593,8 @@ function renderApp() {
         <div id="folders-list"></div>
         
         <div style="font-size: 11px; color: #888; margin: 16px 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;">Feeds</div>
+        <input type="text" id="feed-search-input" placeholder="Filter feeds..." value="${feedSearchQuery}"
+          style="width: 100%; padding: 6px 10px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box; margin-bottom: 8px; outline: none;">
         <div id="feeds-list"></div>
       </div>
       
@@ -538,6 +610,15 @@ function renderApp() {
               <button id="btn-mark-all-read" style="padding: 4px 8px; font-size: 11px; cursor: pointer; background: #e8e8e8; color: #555; border: none; border-radius: 4px; white-space: nowrap;">
                 ✓ Mark All Read
               </button>
+              ${selectedArticles.size > 0 ? `
+              <span style="font-size: 11px; color: #666;">${selectedArticles.size} selected</span>
+              <button id="btn-delete-selected" style="padding: 4px 8px; font-size: 11px; cursor: pointer; background: #ff3b30; color: white; border: none; border-radius: 4px; white-space: nowrap;">
+                🗑️ Delete Selected
+              </button>
+              <button id="btn-clear-selection" style="padding: 4px 8px; font-size: 11px; cursor: pointer; background: #e8e8e8; color: #555; border: none; border-radius: 4px; white-space: nowrap;">
+                ✕ Clear
+              </button>
+              ` : ''}
               <div style="position: relative;">
                 <input type="text" id="search-input" placeholder="🔍 Search articles..." value="${searchQuery}" 
                   style="padding: 6px 12px; padding-right: 28px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; width: 180px; outline: none;">
@@ -599,6 +680,9 @@ function renderApp() {
               </button>
               <button id="btn-add-note" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #9c27b0; color: white; border: none; border-radius: 4px;">
                 📝 Add Note
+              </button>
+              <button id="btn-delete-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #ff3b30; color: white; border: none; border-radius: 4px;">
+                🗑️ Delete
               </button>
             </div>
           </div>
@@ -745,6 +829,10 @@ function renderApp() {
     selectedArticle = null;
     renderArticles();
   });
+  document.getElementById('feed-search-input').addEventListener('input', (e) => {
+    feedSearchQuery = e.target.value;
+    renderFeedsList();
+  });
   document.getElementById('fetch-age-select').addEventListener('change', (e) => {
     fetchAgeDays = parseInt(e.target.value) || 7;
     renderArticles();
@@ -772,35 +860,58 @@ function renderApp() {
   }
   document.getElementById('btn-mark-all-read').addEventListener('click', async () => {
     const feeds = getAllFeeds();
-    const allArticlesRaw = getData().articles;
-    let articles;
+    const data = getData();
+    const allArticlesRaw = data.articles;
+    let articlesToMark;
     
     if (currentFeedId) {
-      articles = allArticlesRaw.filter(a => a.feedId === currentFeedId);
+      articlesToMark = allArticlesRaw.filter(a => a.feedId === currentFeedId);
     } else if (currentFolderId) {
       const folderFeeds = feeds.filter(f => f.folderIds && f.folderIds.includes(currentFolderId));
       const folderFeedIds = new Set(folderFeeds.map(f => f.id));
-      articles = allArticlesRaw.filter(a => folderFeedIds.has(a.feedId));
+      articlesToMark = allArticlesRaw.filter(a => folderFeedIds.has(a.feedId));
     } else {
-      articles = allArticlesRaw;
+      articlesToMark = allArticlesRaw;
     }
     
     // Apply current filter
     switch (currentFilter) {
-      case 'unread': articles = articles.filter(a => !a.isRead); break;
-      case 'starred': articles = articles.filter(a => a.isStarred); break;
-      case 'archived': articles = articles.filter(a => a.isArchived); break;
-      default: articles = articles.filter(a => !a.isArchived);
+      case 'unread': articlesToMark = articlesToMark.filter(a => !a.isRead); break;
+      case 'starred': articlesToMark = articlesToMark.filter(a => a.isStarred); break;
+      case 'archived': articlesToMark = articlesToMark.filter(a => a.isArchived); break;
+      default: articlesToMark = articlesToMark.filter(a => !a.isArchived);
     }
     
-    for (const article of articles) {
-      if (!article.isRead) {
-        await markArticleRead(article.id);
-      }
-    }
+    // Batch update - mark all as read in one operation
+    const idsToMark = new Set(articlesToMark.filter(a => !a.isRead).map(a => a.id));
+    if (idsToMark.size === 0) return;
     
-    renderApp();
+    const timestamp = new Date().toISOString();
+    const updatedArticles = allArticlesRaw.map(a => 
+      idsToMark.has(a.id) ? { ...a, isRead: true, readAt: timestamp } : a
+    );
+    
+    await updateData({ articles: updatedArticles });
+    renderArticles();
   });
+  const deleteSelectedBtn = document.getElementById('btn-delete-selected');
+  if (deleteSelectedBtn) {
+    deleteSelectedBtn.addEventListener('click', async () => {
+      if (selectedArticles.size === 0) return;
+      await deleteMultipleArticles(Array.from(selectedArticles));
+      selectedArticles.clear();
+      selectedArticle = null;
+      renderApp();
+    });
+  }
+  
+  const clearSelectionBtn = document.getElementById('btn-clear-selection');
+  if (clearSelectionBtn) {
+    clearSelectionBtn.addEventListener('click', () => {
+      selectedArticles.clear();
+      renderArticles();
+    });
+  }
   const closeBtn = document.getElementById('btn-close-article');
   if (closeBtn) closeBtn.addEventListener('click', () => { selectedArticle = null; renderApp(); });
   
@@ -839,7 +950,15 @@ function renderApp() {
       }
     });
   }
-  
+  const deleteArticleBtn = document.getElementById('btn-delete-article');
+  if (deleteArticleBtn) {
+    deleteArticleBtn.addEventListener('click', async () => {
+      if (!selectedArticle) return;
+      await deleteArticle(selectedArticle.id);
+      selectedArticle = null;
+      renderApp();
+    });
+  }
   const sidebarResize = document.getElementById('sidebar-resize');
   if (sidebarResize) {
     sidebarResize.addEventListener('mousedown', (e) => {
@@ -910,7 +1029,7 @@ function renderApp() {
   function renderFoldersList() {
   const container = document.getElementById('folders-list');
   const folders = getAllFolders();
-  const feeds = getAllFeeds();
+  let feeds = getAllFeeds();
   const allArticles = getData().articles;
   
   if (folders.length === 0) {
@@ -1037,10 +1156,14 @@ function renderApp() {
 
 function renderFeedsList() {
   const container = document.getElementById('feeds-list');
-  const feeds = getAllFeeds();
+  let feeds = getAllFeeds();
   const folders = getAllFolders();
   const allArticles = getData().articles;
-  
+  // Filter feeds by search query
+  if (feedSearchQuery && feedSearchQuery.trim()) {
+    const query = feedSearchQuery.toLowerCase().trim();
+    feeds = feeds.filter(f => f.title.toLowerCase().includes(query));
+  }
   if (feeds.length === 0) {
     container.innerHTML = '<div style="color: #999; font-size: 14px; padding: 8px 12px;">No feeds yet</div>';
     return;
@@ -1250,6 +1373,11 @@ function renderArticles() {
     case 'inline': renderInlineLayout(container, limitedArticles, feeds); break;
     default: renderListLayout(container, limitedArticles, feeds);
   }
+  // Restore scroll position if saved
+  if (savedArticleListScroll > 0) {
+    const articlesList = document.getElementById('articles-list');
+    if (articlesList) articlesList.scrollTop = savedArticleListScroll;
+  }
 }
 
 function renderListLayout(container, articles, feeds) {
@@ -1270,7 +1398,7 @@ function renderListLayout(container, articles, feeds) {
     
     html += `
       <div class="article-card" data-article-id="${article.id}" 
-        style="background: ${isEven ? '#ffffff' : '#dceaff'}; border-left: 4px solid ${feed ? getFeedColor(feed.id) : '#ccc'}; border-radius: 8px; padding: 16px 20px; margin-bottom: 8px; border: 1px solid #e8e8e8; cursor: pointer; ${article.isRead ? 'opacity: 0.65;' : ''}"
+        style="background: ${selectedArticles.has(article.id) ? '#fff3cd' : (isEven ? '#ffffff' : '#dceaff')}; border-left: 4px solid ${feed ? getFeedColor(feed.id) : '#ccc'}; border-radius: 8px; padding: 16px 20px; margin-bottom: 8px; border: 2px solid ${selectedArticles.has(article.id) ? '#ff9500' : '#e8e8e8'}; cursor: pointer; ${article.isRead ? 'opacity: 0.65;' : ''}"
         onmouseover="this.style.boxShadow='0 2px 8px rgba(0,0,0,0.06)'" onmouseout="this.style.boxShadow='none'">
         <div style="font-size: 16px; font-weight: ${article.isRead ? '500' : '600'}; color: #1a1a1a; margin-bottom: 6px; line-height: 1.4;">${stripHtml(article.title)}</div>
         <div style="font-size: 12px; color: #888; margin-bottom: 8px;">${!showFeedHeaders && feed ? `<span style="color: #007aff;">${feed.title}</span> • ` : ''}${article.author ? stripHtml(article.author) + ' • ' : ''}${publishedDate}</div>
@@ -2004,25 +2132,44 @@ function showAddNoteDialog(article, highlightedText = '') {
 }
 function attachArticleClickHandlers(articles) {
   document.querySelectorAll('.article-card').forEach(card => {
-    card.addEventListener('click', async () => {
+    card.addEventListener('click', async (e) => {
       const articleId = card.dataset.articleId;
       const article = articles.find(a => a.id === articleId);
-      if (article) {
-        await markArticleRead(articleId);
-        selectedArticle = article;
-        isLoadingArticle = true;
-        renderApp();
-        
-        const textContent = stripHtml(article.content || '');
-        const isTruncated = textContent.includes('Read the full story') || textContent.includes('Continue reading') || textContent.includes('Read more') || textContent.length < 500;
-        if (!article.content || isTruncated) {
-          const result = await extractArticle(article.url);
-          if (result.success && result.content) selectedArticle = { ...article, content: result.content };
+      if (!article) return;
+      
+      // Cmd+click (Mac) or Ctrl+click (Windows) for multi-select
+      if (e.metaKey || e.ctrlKey) {
+        e.preventDefault();
+        if (selectedArticles.has(articleId)) {
+          selectedArticles.delete(articleId);
+        } else {
+          selectedArticles.add(articleId);
         }
-        
-        isLoadingArticle = false;
         renderApp();
+        return;
       }
+      
+      // Normal click - clear selection and open article
+      selectedArticles.clear();
+      
+      // Save scroll position before re-render
+      const articleList = document.getElementById('articles-list');
+      savedArticleListScroll = articleList ? articleList.scrollTop : 0;
+      
+      await markArticleRead(articleId);
+      selectedArticle = article;
+      isLoadingArticle = true;
+      renderApp();
+      
+      const textContent = stripHtml(article.content || '');
+      const isTruncated = textContent.includes('Read the full story') || textContent.includes('Continue reading') || textContent.includes('Read more') || textContent.length < 500;
+      if (!article.content || isTruncated) {
+        const result = await extractArticle(article.url);
+        if (result.success && result.content) selectedArticle = { ...article, content: result.content };
+      }
+      
+      isLoadingArticle = false;
+      renderApp();
     });
   });
 }

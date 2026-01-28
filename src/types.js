@@ -11,12 +11,13 @@ export const defaultAppData = {
   noteTags: [],
   filterRules: [],
   trainingSignals: [],
-  savedSearches: [],
+ savedSearches: [],
+  deletedArticleUrls: [],
   preferences: {
     globalRefreshInterval: 10080, // weekly in minutes
     defaultView: 'list',
     theme: 'system',
-    articleRetentionDays: 30,
+   articleRetentionDays: 30,
     notificationsEnabled: true,
     ttsSpeed: 1.0,
   },

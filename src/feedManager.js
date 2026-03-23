@@ -415,10 +415,11 @@ export async function refreshAllFeeds(maxAgeDays = 7, onProgress = null) {
   const feeds = getAllFeeds().filter(f => f.isEnabled);
   const results = [];
 
-  // Refresh in batches of 5 with a short pause between batches.
-  // This prevents CORS proxy rate-limiting when you have hundreds of feeds.
-  const BATCH_SIZE = 5;
-  const BATCH_DELAY_MS = 300;
+  // Refresh in batches with a short pause between batches to avoid
+  // hammering the CORS proxy. 10 concurrent fetches is well within
+  // codetabs' limits and halves the total time vs the old batch of 5.
+  const BATCH_SIZE = 10;
+  const BATCH_DELAY_MS = 100;
 
   for (let i = 0; i < feeds.length; i += BATCH_SIZE) {
     const batch = feeds.slice(i, i + BATCH_SIZE);

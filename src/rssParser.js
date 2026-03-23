@@ -91,13 +91,17 @@ function parseDate(dateStr) {
 
 // Fetch and parse an RSS feed
 // CORS proxy chain — tried in order until one succeeds.
-// codetabs is first because corsproxy.io has been returning 403.
+// codetabs is first because corsproxy.io returns 403.
+// allorigins.win removed — confirmed timing out on every request.
 const PROXY_BUILDERS = [
   u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
   u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-  u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
   u => u, // direct fetch — last resort (works for feeds with CORS headers)
 ];
+
+// 5 s per proxy attempt keeps worst-case at ~10 s/feed (codetabs timeout +
+// instant corsproxy 403 + instant direct fail) instead of the old 36 s.
+const PROXY_TIMEOUT_MS = 5000;
 
 export async function fetchFeed(url) {
   let lastError = 'All proxies failed';
@@ -105,7 +109,7 @@ export async function fetchFeed(url) {
   for (const buildProxy of PROXY_BUILDERS) {
     try {
       const proxyUrl = buildProxy(url);
-      const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(12000) });
+      const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(PROXY_TIMEOUT_MS) });
 
       if (!response.ok) {
         lastError = `HTTP ${response.status}`;

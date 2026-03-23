@@ -4,6 +4,17 @@ import { stripHtml, formatArticleContent } from '../utils.js';
 import { state } from '../state.js';
 import { showAddNoteDialog } from './dialogs.js';
 
+// ── Callback registry ─────────────────────────────────────────────────────────
+// Avoids circular imports: main.js calls initArticlePaneCallbacks() after
+// renderApp() so toolbar actions can call back into main's scoped updaters.
+let _onRefreshSidebar = null;
+let _onRefreshList    = null;
+
+export function initArticlePaneCallbacks({ onRefreshSidebar, onRefreshList }) {
+  _onRefreshSidebar = onRefreshSidebar;
+  _onRefreshList    = onRefreshList;
+}
+
 // Extract full article content from a URL
 export async function extractArticle(url) {
   const proxies = [
@@ -173,16 +184,17 @@ export function restoreReadingPosition() {
   }
 }
 
-export async function selectArticle(article, renderApp) {
-  // Preserve the article list scroll position before the first renderApp() call
+export async function selectArticle(article) {
+  // Preserve the article list scroll position
   const articleList = document.getElementById('articles-list');
   state.savedArticleListScroll = articleList ? articleList.scrollTop : 0;
 
   await markArticleRead(article.id);
   state.selectedArticle = article;
   state.isLoadingArticle = true;
-  // First render: builds the 3-panel layout and shows the loading spinner
-  renderApp();
+
+  // Show pane with loading spinner — no full renderApp() needed
+  openArticlePane();
 
   const textContent = stripHtml(article.content || '');
   const isTruncated = textContent.includes('Read the full story') ||
@@ -197,10 +209,158 @@ export async function selectArticle(article, renderApp) {
   }
 
   state.isLoadingArticle = false;
-  // Targeted update: only swaps the article content div.
-  // The article list DOM is never touched, so scroll position is preserved.
+  // Swap in the real content without touching the article list DOM
   renderArticlePaneContent();
+  // Update sidebar unread counts
+  if (_onRefreshSidebar) _onRefreshSidebar();
+  if (_onRefreshList) _onRefreshList();
 
   // Persist reading position for next launch
   saveReadingPosition();
+}
+
+// ── Article pane show / hide ──────────────────────────────────────────────────
+
+export function openArticlePane() {
+  if (state.currentLayout === 'inline') {
+    renderArticlePaneContent();
+    return;
+  }
+  const pane        = document.getElementById('article-pane');
+  const listPanel   = document.getElementById('article-list-panel');
+  const resizeHandle = document.getElementById('articlelist-resize');
+  if (!pane) return;
+
+  pane.style.display = 'flex';
+  if (listPanel)    listPanel.style.width = state.articleListWidth + 'px';
+  if (resizeHandle) resizeHandle.style.display = 'block';
+
+  renderArticlePaneToolbar();
+  renderArticlePaneContent();
+}
+
+export function closeArticlePane() {
+  const pane        = document.getElementById('article-pane');
+  const listPanel   = document.getElementById('article-list-panel');
+  const resizeHandle = document.getElementById('articlelist-resize');
+  if (pane)         pane.style.display = 'none';
+  if (listPanel)    listPanel.style.width = '100%';
+  if (resizeHandle) resizeHandle.style.display = 'none';
+}
+
+// ── Article pane toolbar ──────────────────────────────────────────────────────
+// Re-renders only the toolbar buttons (star/archive state, font label).
+// Called from openArticlePane() and refreshAll().
+
+export function renderArticlePaneToolbar() {
+  const toolbar = document.getElementById('article-pane-toolbar');
+  if (!toolbar || !state.selectedArticle) return;
+
+  const a = state.selectedArticle;
+  toolbar.innerHTML = `
+    <button id="btn-close-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #e8e8e8; border: none; border-radius: 4px;">← Back</button>
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <div style="display: flex; align-items: center; gap: 4px; background: #e8e8e8; border-radius: 4px; padding: 2px;">
+        <button id="btn-font-decrease" style="padding: 4px 10px; font-size: 14px; cursor: pointer; background: transparent; border: none;">A-</button>
+        <span id="font-size-label" style="font-size: 12px; color: #666; min-width: 35px; text-align: center;">${state.articleFontSize}px</span>
+        <button id="btn-font-increase" style="padding: 4px 10px; font-size: 14px; cursor: pointer; background: transparent; border: none;">A+</button>
+      </div>
+      <button id="btn-star-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: ${a.isStarred ? '#ff9500' : '#e8e8e8'}; color: ${a.isStarred ? 'white' : '#333'}; border: none; border-radius: 4px;">
+        ${a.isStarred ? '★ Starred' : '☆ Star'}
+      </button>
+      <button id="btn-archive-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: ${a.isArchived ? '#8e8e93' : '#e8e8e8'}; color: ${a.isArchived ? 'white' : '#333'}; border: none; border-radius: 4px;">
+        ${a.isArchived ? '📦 Archived' : '📥 Archive'}
+      </button>
+      <button id="btn-share-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #34c759; color: white; border: none; border-radius: 4px;">📋 Share</button>
+      <button id="btn-open-external" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #007aff; color: white; border: none; border-radius: 4px;">Open in Browser ↗</button>
+      <button id="btn-add-note" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #9c27b0; color: white; border: none; border-radius: 4px;">📝 Add Note</button>
+      <button id="btn-delete-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #ff3b30; color: white; border: none; border-radius: 4px;">🗑️ Delete</button>
+    </div>
+  `;
+
+  document.getElementById('btn-close-article').addEventListener('click', () => {
+    state.selectedArticle = null;
+    closeArticlePane();
+    if (_onRefreshSidebar) _onRefreshSidebar();
+    if (_onRefreshList)    _onRefreshList();
+  });
+
+  document.getElementById('btn-font-decrease').addEventListener('click', () => {
+    if (state.articleFontSize > 12) {
+      state.articleFontSize -= 2;
+      const textEl = document.getElementById('article-text');
+      if (textEl) textEl.style.fontSize = state.articleFontSize + 'px';
+      const lbl = document.getElementById('font-size-label');
+      if (lbl) lbl.textContent = state.articleFontSize + 'px';
+    }
+  });
+
+  document.getElementById('btn-font-increase').addEventListener('click', () => {
+    if (state.articleFontSize < 28) {
+      state.articleFontSize += 2;
+      const textEl = document.getElementById('article-text');
+      if (textEl) textEl.style.fontSize = state.articleFontSize + 'px';
+      const lbl = document.getElementById('font-size-label');
+      if (lbl) lbl.textContent = state.articleFontSize + 'px';
+    }
+  });
+
+  document.getElementById('btn-star-article').addEventListener('click', async () => {
+    if (!state.selectedArticle) return;
+    await toggleArticleStar(state.selectedArticle.id);
+    state.selectedArticle = { ...state.selectedArticle, isStarred: !state.selectedArticle.isStarred };
+    const btn = document.getElementById('btn-star-article');
+    if (btn) {
+      btn.style.background = state.selectedArticle.isStarred ? '#ff9500' : '#e8e8e8';
+      btn.style.color      = state.selectedArticle.isStarred ? 'white'   : '#333';
+      btn.textContent      = state.selectedArticle.isStarred ? '★ Starred' : '☆ Star';
+    }
+    if (_onRefreshSidebar) _onRefreshSidebar();
+    if (_onRefreshList)    _onRefreshList();
+  });
+
+  document.getElementById('btn-archive-article').addEventListener('click', async () => {
+    if (!state.selectedArticle) return;
+    await toggleArticleArchive(state.selectedArticle.id);
+    state.selectedArticle = { ...state.selectedArticle, isArchived: !state.selectedArticle.isArchived };
+    const btn = document.getElementById('btn-archive-article');
+    if (btn) {
+      btn.style.background = state.selectedArticle.isArchived ? '#8e8e93' : '#e8e8e8';
+      btn.style.color      = state.selectedArticle.isArchived ? 'white'   : '#333';
+      btn.textContent      = state.selectedArticle.isArchived ? '📦 Archived' : '📥 Archive';
+    }
+    if (_onRefreshSidebar) _onRefreshSidebar();
+    if (_onRefreshList)    _onRefreshList();
+  });
+
+  document.getElementById('btn-share-article').addEventListener('click', async () => {
+    if (!state.selectedArticle) return;
+    try {
+      await navigator.clipboard.writeText(`${state.selectedArticle.title}\n${state.selectedArticle.url}`);
+      const btn = document.getElementById('btn-share-article');
+      if (btn) { btn.textContent = '✓ Copied!'; setTimeout(() => { btn.textContent = '📋 Share'; }, 2000); }
+    } catch (err) { console.error('Share copy failed:', err); }
+  });
+
+  document.getElementById('btn-open-external').addEventListener('click', () => {
+    if (state.selectedArticle) window.open(state.selectedArticle.url, '_blank');
+  });
+
+  document.getElementById('btn-add-note').addEventListener('click', () => {
+    if (!state.selectedArticle) return;
+    const highlightedText = window.getSelection().toString().trim();
+    showAddNoteDialog(state.selectedArticle, highlightedText, () => {
+      if (_onRefreshSidebar) _onRefreshSidebar();
+      renderArticlePaneContent();
+    });
+  });
+
+  document.getElementById('btn-delete-article').addEventListener('click', async () => {
+    if (!state.selectedArticle) return;
+    await deleteArticle(state.selectedArticle.id);
+    state.selectedArticle = null;
+    closeArticlePane();
+    if (_onRefreshSidebar) _onRefreshSidebar();
+    if (_onRefreshList)    _onRefreshList();
+  });
 }

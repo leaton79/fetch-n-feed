@@ -2,7 +2,7 @@ import { getAllFeeds, getAllArticles, getArticlesByFeed, markArticleRead, delete
 import { getData } from '../database.js';
 import { getFeedColor, stripHtml, truncate, formatArticleContent, sortArticles } from '../utils.js';
 import { state, ARTICLES_PER_PAGE } from '../state.js';
-import { selectArticle, extractArticle, renderArticlePaneContent, saveReadingPosition } from './articlePane.js';
+import { selectArticle, extractArticle, renderArticlePaneContent, saveReadingPosition, openArticlePane } from './articlePane.js';
 import { renderNotesView } from './notesView.js';
 
 export function renderArticles(renderApp) {
@@ -343,14 +343,16 @@ export function attachArticleClickHandlers(articles, renderApp) {
       // Normal click - clear selection and open article
       state.selectedArticles.clear();
 
-      // Preserve article list scroll position before the full re-render
+      // Preserve article list scroll position
       const articleList = document.getElementById('articles-list');
       state.savedArticleListScroll = articleList ? articleList.scrollTop : 0;
 
       await markArticleRead(articleId);
       state.selectedArticle = article;
       state.isLoadingArticle = true;
-      renderApp(); // First render: layout + loading spinner
+
+      // Show pane with loading spinner — no full renderApp() call needed
+      openArticlePane();
 
       const textContent = stripHtml(article.content || '');
       const isTruncated = textContent.includes('Read the full story') || textContent.includes('Continue reading') || textContent.includes('Read more') || textContent.length < 500;
@@ -360,7 +362,7 @@ export function attachArticleClickHandlers(articles, renderApp) {
       }
 
       state.isLoadingArticle = false;
-      // Targeted update: only the article content div changes; list scroll is untouched
+      // Swap in final content without touching the article list DOM
       renderArticlePaneContent();
       saveReadingPosition();
     });

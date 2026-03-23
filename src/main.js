@@ -7,7 +7,7 @@ import { state, ARTICLES_PER_PAGE } from './state.js';
 import { getFeedColor, stripHtml, truncate, applyHighlight, formatArticleContent, sortArticles } from './utils.js';
 import { showKeyboardHelp, showFolderDialog, showEditNoteDialog, showAddNoteDialog } from './views/dialogs.js';
 import { renderNotesView, downloadNotesAsText } from './views/notesView.js';
-import { extractArticle, renderArticlePaneContent, saveReadingPosition, restoreReadingPosition, selectArticle } from './views/articlePane.js';
+import { extractArticle, renderArticlePaneContent, renderArticlePaneToolbar, openArticlePane, closeArticlePane, initArticlePaneCallbacks, saveReadingPosition, restoreReadingPosition, selectArticle } from './views/articlePane.js';
 import { renderArticles, renderListLayout, renderGridLayout, renderMagazineLayout, renderInlineLayout, attachArticleClickHandlers } from './views/articleList.js';
 import { renderFeedsList, handleAddFeed, handleRefreshAll } from './views/sidebar.js';
 
@@ -144,7 +144,9 @@ function handleKeyboard(e) {
       if (state.selectedArticle) {
         e.preventDefault();
         state.selectedArticle = null;
-        renderApp();
+        closeArticlePane();
+        refreshSidebar();
+        refreshList();
       }
       break;
       
@@ -273,62 +275,25 @@ function renderApp() {
           <div id="articles-list" style="flex: 1; overflow-y: auto; padding: 12px;"></div>
         </div>
         
-        ${state.selectedArticle && state.currentLayout !== 'inline' ? `<div id="articlelist-resize" style="width: 5px; background: #e0e0e0; cursor: col-resize; flex-shrink: 0;" onmouseover="this.style.background='#007aff'" onmouseout="this.style.background='#e0e0e0'"></div>` : ''}
-        
-        ${state.selectedArticle && state.currentLayout !== 'inline' ? `
-        <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #ffffff;">
-          
-          <div style="padding: 12px 20px; background: #f8f8f8; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
-            <button id="btn-close-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #e8e8e8; border: none; border-radius: 4px;">
-              ← Back
-            </button>
-            <div style="display: flex; gap: 8px; align-items: center;">
-              <div style="display: flex; align-items: center; gap: 4px; background: #e8e8e8; border-radius: 4px; padding: 2px;">
-                <button id="btn-font-decrease" style="padding: 4px 10px; font-size: 14px; cursor: pointer; background: transparent; border: none;">A-</button>
-                <span style="font-size: 12px; color: #666; min-width: 35px; text-align: center;">${state.articleFontSize}px</span>
-                <button id="btn-font-increase" style="padding: 4px 10px; font-size: 14px; cursor: pointer; background: transparent; border: none;">A+</button>
-              </div>
-              <button id="btn-star-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: ${state.selectedArticle.isStarred ? '#ff9500' : '#e8e8e8'}; color: ${state.selectedArticle.isStarred ? 'white' : '#333'}; border: none; border-radius: 4px;">
-                ${state.selectedArticle.isStarred ? '★ Starred' : '☆ Star'}
-              </button>
-              <button id="btn-archive-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: ${state.selectedArticle.isArchived ? '#8e8e93' : '#e8e8e8'}; color: ${state.selectedArticle.isArchived ? 'white' : '#333'}; border: none; border-radius: 4px;">
-                ${state.selectedArticle.isArchived ? '📦 Archived' : '📥 Archive'}
-              </button>
-              <button id="btn-share-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #34c759; color: white; border: none; border-radius: 4px;">
-                📋 Share
-              </button>
-              <button id="btn-open-external" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #007aff; color: white; border: none; border-radius: 4px;">
-                Open in Browser ↗
-              </button>
-              <button id="btn-add-note" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #9c27b0; color: white; border: none; border-radius: 4px;">
-                📝 Add Note
-              </button>
-              <button id="btn-delete-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #ff3b30; color: white; border: none; border-radius: 4px;">
-                🗑️ Delete
-              </button>
-            </div>
+        <!-- Resize handle — always in DOM, hidden when no article open -->
+        <div id="articlelist-resize"
+          style="width: 5px; background: #e0e0e0; cursor: col-resize; flex-shrink: 0;
+                 display: ${state.selectedArticle && state.currentLayout !== 'inline' ? 'block' : 'none'};"
+          onmouseover="this.style.background='#007aff'" onmouseout="this.style.background='#e0e0e0'"></div>
+
+        <!-- Article pane — always in DOM, shown/hidden via openArticlePane()/closeArticlePane() -->
+        <div id="article-pane"
+          style="flex: 1; display: ${state.selectedArticle && state.currentLayout !== 'inline' ? 'flex' : 'none'};
+                 flex-direction: column; overflow: hidden; background: #ffffff;">
+          <div id="article-pane-toolbar"
+            style="padding: 12px 20px; background: #f8f8f8; border-bottom: 1px solid #e0e0e0;
+                   display: flex; justify-content: space-between; align-items: center;">
+            <!-- Populated by renderArticlePaneToolbar() -->
           </div>
-          
           <div id="article-content" style="flex: 1; overflow-y: auto; padding: 24px 32px;">
-            ${state.isLoadingArticle ? `
-              <div style="text-align: center; padding: 40px; color: #666;">
-                <p style="font-size: 16px;">Loading full article...</p>
-              </div>
-            ` : `
-              <h1 style="font-size: 28px; font-weight: 600; line-height: 1.3; margin: 0 0 16px 0; color: #1a1a1a;">
-                ${stripHtml(state.selectedArticle.title)}
-              </h1>
-              <div style="font-size: 14px; color: #666; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #eee;">
-                ${state.selectedArticle.author ? `<span>${stripHtml(state.selectedArticle.author)}</span> • ` : ''}
-                ${state.selectedArticle.publishedAt ? new Date(state.selectedArticle.publishedAt).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : ''}
-              </div>
-              <div id="article-text" style="font-size: ${state.articleFontSize}px; line-height: 1.7; color: #333;">
-                ${formatArticleContent(state.selectedArticle.content || state.selectedArticle.summary || 'No content available.', state.selectedArticle.id)}
-              </div>
-            `}
+            <!-- Populated by renderArticlePaneContent() -->
           </div>
         </div>
-        ` : ''}
       </div>
     </div>
   `;
@@ -480,7 +445,9 @@ function renderApp() {
       await deleteMultipleArticles(Array.from(state.selectedArticles));
       state.selectedArticles.clear();
       state.selectedArticle = null;
-      renderApp();
+      closeArticlePane();
+      refreshSidebar();
+      refreshList();
     });
   }
   
@@ -491,53 +458,16 @@ function renderApp() {
       renderArticles(renderApp);
     });
   }
-  const closeBtn = document.getElementById('btn-close-article');
-  if (closeBtn) closeBtn.addEventListener('click', () => { state.selectedArticle = null; renderApp(); });
-  
-  const openExternalBtn = document.getElementById('btn-open-external');
-  if (openExternalBtn) openExternalBtn.addEventListener('click', () => { if (state.selectedArticle) window.open(state.selectedArticle.url, '_blank'); });
-  
-  const starBtn = document.getElementById('btn-star-article');
-  if (starBtn) {
-    starBtn.addEventListener('click', async () => {
-      if (state.selectedArticle) {
-        await toggleArticleStar(state.selectedArticle.id);
-        state.selectedArticle = { ...state.selectedArticle, isStarred: !state.selectedArticle.isStarred };
-        refreshAll();
-      }
-    });
+  // ── Toolbar buttons are now managed by renderArticlePaneToolbar() in articlePane.js.
+  // Register the scoped-update callbacks so toolbar actions can update sidebar/list.
+  initArticlePaneCallbacks({ onRefreshSidebar: refreshSidebar, onRefreshList: refreshList });
+
+  // Populate the article pane if an article is selected (e.g. on restore or re-render)
+  if (state.selectedArticle && state.currentLayout !== 'inline') {
+    renderArticlePaneToolbar();
+    renderArticlePaneContent();
   }
-  
-  const archiveBtn = document.getElementById('btn-archive-article');
-  if (archiveBtn) {
-    archiveBtn.addEventListener('click', async () => {
-      if (state.selectedArticle) {
-        await toggleArticleArchive(state.selectedArticle.id);
-        state.selectedArticle = { ...state.selectedArticle, isArchived: !state.selectedArticle.isArchived };
-        refreshAll();
-      }
-    });
-  }
-  
-  const addNoteBtn = document.getElementById('btn-add-note');
-  if (addNoteBtn) {
-    addNoteBtn.addEventListener('click', () => {
-      if (state.selectedArticle) {
-        const selection = window.getSelection();
-        const highlightedText = selection.toString().trim();
-        showAddNoteDialog(state.selectedArticle, highlightedText, () => { renderSidebarFilters(); renderArticlePaneContent(); });
-      }
-    });
-  }
-  const deleteArticleBtn = document.getElementById('btn-delete-article');
-  if (deleteArticleBtn) {
-    deleteArticleBtn.addEventListener('click', async () => {
-      if (!state.selectedArticle) return;
-      await deleteArticle(state.selectedArticle.id);
-      state.selectedArticle = null;
-      renderApp();
-    });
-  }
+
   const sidebarResize = document.getElementById('sidebar-resize');
   if (sidebarResize) {
     sidebarResize.addEventListener('mousedown', (e) => {
@@ -560,30 +490,8 @@ function renderApp() {
     });
   }
   
-  const fontDecreaseBtn = document.getElementById('btn-font-decrease');
-  if (fontDecreaseBtn) {
-    fontDecreaseBtn.addEventListener('click', () => {
-      if (state.articleFontSize > 12) {
-        state.articleFontSize -= 2;
-        const textEl = document.getElementById('article-text');
-        if (textEl) textEl.style.fontSize = state.articleFontSize + 'px';
-        fontDecreaseBtn.nextElementSibling.textContent = state.articleFontSize + 'px';
-      }
-    });
-  }
-  
-  const fontIncreaseBtn = document.getElementById('btn-font-increase');
-  if (fontIncreaseBtn) {
-    fontIncreaseBtn.addEventListener('click', () => {
-      if (state.articleFontSize < 28) {
-        state.articleFontSize += 2;
-        const textEl = document.getElementById('article-text');
-        if (textEl) textEl.style.fontSize = state.articleFontSize + 'px';
-        fontIncreaseBtn.previousElementSibling.textContent = state.articleFontSize + 'px';
-      }
-    });
-  }
-  
+  // Font size buttons are now handled by renderArticlePaneToolbar() in articlePane.js.
+
   const articleListResize = document.getElementById('articlelist-resize');
   if (articleListResize) {
     articleListResize.addEventListener('mousedown', (e) => {
@@ -846,7 +754,8 @@ function refreshAll() {
   renderSidebarFilters();
   renderFeedsList(renderApp);
   renderArticles(renderApp);
-  renderArticlePaneContent();
+  renderArticlePaneToolbar();   // updates star/archive button states in toolbar
+  renderArticlePaneContent();   // updates article text
 }
 
 init();

@@ -3,6 +3,7 @@ import { getData } from '../database.js';
 import { stripHtml } from '../utils.js';
 import { state } from '../state.js';
 import { showEditNoteDialog } from './dialogs.js';
+import { openArticlePane } from './articlePane.js';
 
 export function renderNotesView(renderApp) {
   const container = document.getElementById('articles-list');
@@ -253,6 +254,7 @@ export function renderNotesView(renderApp) {
         state.currentFolderId = null;
         state.selectedArticle = article;
         await markArticleRead(article.id);
+        // notes→article is a full layout switch; renderApp() is correct here
         renderApp();
       } else {
         alert('Article no longer exists');

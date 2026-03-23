@@ -9,6 +9,9 @@ export function renderArticles(renderApp) {
   const container = document.getElementById('articles-list');
   const statusBar = document.getElementById('status-bar');
 
+  // DOM not ready yet (e.g. called during early init) — bail silently
+  if (!container) return;
+
   // Show notes view if active
   if (state.showNotesView) {
     renderNotesView(renderApp);

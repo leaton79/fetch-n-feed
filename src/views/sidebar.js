@@ -172,7 +172,7 @@ export async function handleRefreshAll(renderApp, renderArticles) {
   const feeds = getAllFeeds();
 
   if (feeds.length === 0) {
-    statusBar.textContent = 'No feeds to refresh. Add a feed first!';
+    if (statusBar) statusBar.textContent = 'No feeds to refresh. Add a feed first!';
     return;
   }
 
@@ -181,21 +181,28 @@ export async function handleRefreshAll(renderApp, renderArticles) {
   // Disable the Refresh button while running so it can't be double-clicked
   const refreshBtn = document.getElementById('btn-refresh-all');
   if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = '↻ Refreshing…'; }
+  if (statusBar) statusBar.textContent = `Starting refresh of ${feeds.length} feeds…`;
 
-  statusBar.textContent = `Starting refresh of ${feeds.length} feeds…`;
+  try {
+    const results = await refreshAllFeeds(maxAgeDays, (done, total, currentResults) => {
+      const newSoFar = currentResults.reduce((sum, r) => sum + (r.newArticles || 0), 0);
+      // Update status text — do this BEFORE renderArticles so it isn't overwritten
+      if (statusBar) statusBar.textContent = `Refreshing… ${done} / ${total} feeds  ·  ${newSoFar} new articles`;
+      // Silently skip the live update if the article list DOM has gone away
+      try { renderArticles(renderApp); } catch (e) { console.warn('renderArticles in progress cb:', e); }
+      // Restore status text in case renderArticles overwrote it
+      if (statusBar) statusBar.textContent = `Refreshing… ${done} / ${total} feeds  ·  ${newSoFar} new articles`;
+    });
 
-  const results = await refreshAllFeeds(maxAgeDays, (done, total, currentResults) => {
-    const newSoFar = currentResults.reduce((sum, r) => sum + (r.newArticles || 0), 0);
-    statusBar.textContent = `Refreshing… ${done} / ${total} feeds  ·  ${newSoFar} new articles`;
-    // Render new articles as they arrive so the list updates in real time
+    const totalNew = results.reduce((sum, r) => sum + (r.newArticles || 0), 0);
+    const failures  = results.filter(r => !r.success).length;
+    if (statusBar) statusBar.textContent = `✓ Refreshed ${results.length} feeds — ${totalNew} new articles${failures > 0 ? `  ·  ${failures} failed` : ''}`;
     renderArticles(renderApp);
-  });
-
-  const totalNew = results.reduce((sum, r) => sum + (r.newArticles || 0), 0);
-  const failures  = results.filter(r => !r.success).length;
-
-  if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = '↻ Refresh'; }
-
-  statusBar.textContent = `✓ Refreshed ${results.length} feeds — ${totalNew} new articles${failures > 0 ? `  ·  ${failures} failed` : ''}`;
-  renderArticles(renderApp);
+  } catch (err) {
+    console.error('handleRefreshAll failed:', err);
+    if (statusBar) statusBar.textContent = `Refresh failed: ${err.message}`;
+  } finally {
+    // Always re-enable the button, even if something threw
+    if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = '↻ Refresh'; }
+  }
 }

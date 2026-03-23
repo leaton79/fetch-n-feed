@@ -90,30 +90,40 @@ function parseDate(dateStr) {
 }
 
 // Fetch and parse an RSS feed
+// CORS proxy chain — tried in order until one succeeds.
+// codetabs is first because corsproxy.io has been returning 403.
+const PROXY_BUILDERS = [
+  u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+  u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  u => u, // direct fetch — last resort (works for feeds with CORS headers)
+];
+
 export async function fetchFeed(url) {
-  try {
-    // Use a CORS proxy for fetching feeds
-    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-    
-    const response = await fetch(proxyUrl);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+  let lastError = 'All proxies failed';
+
+  for (const buildProxy of PROXY_BUILDERS) {
+    try {
+      const proxyUrl = buildProxy(url);
+      const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(12000) });
+
+      if (!response.ok) {
+        lastError = `HTTP ${response.status}`;
+        continue; // try next proxy
+      }
+
+      const xmlText = await response.text();
+      const feed = parseXML(xmlText);
+
+      return { success: true, feed };
+    } catch (err) {
+      lastError = err.message || 'Fetch error';
+      // AbortError = timeout; TypeError = network; continue to next proxy
     }
-    
-    const xmlText = await response.text();
-    const feed = parseXML(xmlText);
-    
-    return {
-      success: true,
-      feed: feed,
-    };
-  } catch (error) {
-    console.error('Failed to fetch feed:', url, error);
-    return {
-      success: false,
-      error: error.message || 'Failed to fetch feed',
-    };
   }
+
+  console.error('fetchFeed: all proxies failed for', url, '—', lastError);
+  return { success: false, error: lastError };
 }
 
 // Detect RSS feed URLs from a website URL (basic detection)

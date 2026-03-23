@@ -172,22 +172,27 @@ export async function deleteArticle(id) {
   const data = getData();
   const article = data.articles.find(a => a.id === id);
   if (!article) return;
-  
+
   // Add URL to deleted list so it won't come back on refresh
   const deletedUrls = data.deletedArticleUrls || [];
   if (!deletedUrls.includes(article.url)) {
     deletedUrls.push(article.url);
   }
-  
+
+  // Cap the deleted list at 5,000 entries to prevent unbounded growth
+  const cappedUrls = deletedUrls.length > 5000
+    ? deletedUrls.slice(deletedUrls.length - 5000)
+    : deletedUrls;
+
   // Remove the article
   const updatedArticles = data.articles.filter(a => a.id !== id);
-  await updateData({ articles: updatedArticles, deletedArticleUrls: deletedUrls });
+  await updateData({ articles: updatedArticles, deletedArticleUrls: cappedUrls });
 }
 
 export async function deleteMultipleArticles(ids) {
   const data = getData();
   const articlesToDelete = data.articles.filter(a => ids.includes(a.id));
-  
+
   // Add URLs to deleted list
   const deletedUrls = data.deletedArticleUrls || [];
   for (const article of articlesToDelete) {
@@ -195,10 +200,15 @@ export async function deleteMultipleArticles(ids) {
       deletedUrls.push(article.url);
     }
   }
-  
+
+  // Cap the deleted list at 5,000 entries to prevent unbounded growth
+  const cappedUrls = deletedUrls.length > 5000
+    ? deletedUrls.slice(deletedUrls.length - 5000)
+    : deletedUrls;
+
   // Remove the articles
   const updatedArticles = data.articles.filter(a => !ids.includes(a.id));
-  await updateData({ articles: updatedArticles, deletedArticleUrls: deletedUrls });
+  await updateData({ articles: updatedArticles, deletedArticleUrls: cappedUrls });
 }
 export function getArticle(id) {
   return getData().articles.find(a => a.id === id);
@@ -311,24 +321,28 @@ export function getAllTags() {
 
 export async function cleanupOldArticles() {
   const data = getData();
-  const retentionDays = data.preferences.articleRetentionDays;
+  const retentionDays = data.preferences.articleRetentionDays || 30;
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
   const cutoffString = cutoffDate.toISOString();
-  
+
   const originalCount = data.articles.length;
-  
-  // Keep articles that are: starred, highlighted, or newer than cutoff
-  const newArticles = data.articles.filter(a => 
-    a.isStarred || 
-    a.highlights.length > 0 || 
+
+  // Build a set of article IDs that have notes — these must never be deleted
+  const articleIdsWithNotes = new Set(data.notes.map(n => n.articleId));
+
+  // Keep articles that are: starred, have highlights, have notes, or are newer than cutoff
+  const newArticles = data.articles.filter(a =>
+    a.isStarred ||
+    (a.highlights && a.highlights.length > 0) ||
+    articleIdsWithNotes.has(a.id) ||
     a.fetchedAt > cutoffString
   );
-  
+
   if (newArticles.length < originalCount) {
     await updateData({ articles: newArticles });
   }
-  
+
   return originalCount - newArticles.length;
 }
 // ============ REFRESH ============
@@ -397,15 +411,38 @@ export async function refreshFeed(feedId, maxAgeDays = 7) {
   return { success: true, newArticles: newCount, totalItems: result.feed.items.length };
 }
 
-export async function refreshAllFeeds(maxAgeDays = 7) {
+export async function refreshAllFeeds(maxAgeDays = 7, onProgress = null) {
   const feeds = getAllFeeds().filter(f => f.isEnabled);
   const results = [];
-  
-  for (const feed of feeds) {
-    const result = await refreshFeed(feed.id, maxAgeDays);
-    results.push({ feedId: feed.id, title: feed.title, ...result });
+
+  // Refresh in batches of 5 with a short pause between batches.
+  // This prevents CORS proxy rate-limiting when you have hundreds of feeds.
+  const BATCH_SIZE = 5;
+  const BATCH_DELAY_MS = 300;
+
+  for (let i = 0; i < feeds.length; i += BATCH_SIZE) {
+    const batch = feeds.slice(i, i + BATCH_SIZE);
+
+    const batchResults = await Promise.all(
+      batch.map(feed => refreshFeed(feed.id, maxAgeDays))
+    );
+
+    batchResults.forEach((r, j) => {
+      results.push({ feedId: batch[j].id, title: batch[j].title, ...r });
+    });
+
+    // Report progress after each batch
+    if (onProgress) {
+      const done = Math.min(i + BATCH_SIZE, feeds.length);
+      onProgress(done, feeds.length, results);
+    }
+
+    // Pause between batches (skip pause after the last batch)
+    if (i + BATCH_SIZE < feeds.length) {
+      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+    }
   }
-  
+
   return results;
 }
 

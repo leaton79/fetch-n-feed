@@ -1,7 +1,7 @@
 // main.js - Fetch N Feed entry point
 
 import { loadData, getData, updateData, exportData } from './database.js';
-import { addFeed, getAllFeeds, getAllArticles, getArticlesByFeed, deleteFeed, markArticleRead, toggleArticleStar, toggleArticleArchive, deleteArticle, deleteMultipleArticles, refreshFeed, refreshAllFeeds, addFolder, deleteFolder, getAllFolders, updateFeed, addNote, updateNote, deleteNote, deleteMultipleNotes, getAllNotes, getNotesByTag, getAllNoteTags, addNoteTag, deleteNoteTag, generateAPACitation, exportNotesToText } from './feedManager.js';
+import { addFeed, getAllFeeds, getAllArticles, getArticlesByFeed, deleteFeed, markArticleRead, toggleArticleStar, toggleArticleArchive, deleteArticle, deleteMultipleArticles, refreshFeed, refreshAllFeeds, addFolder, deleteFolder, getAllFolders, updateFeed, addNote, updateNote, deleteNote, deleteMultipleNotes, getAllNotes, getNotesByTag, getAllNoteTags, addNoteTag, deleteNoteTag, generateAPACitation, exportNotesToText, cleanupOldArticles } from './feedManager.js';
 import { downloadOPML, parseOPML } from './opml.js';
 
 let savedArticleListScroll = 0;
@@ -26,6 +26,10 @@ let notesSearchQuery = '';
 let fetchAgeDays = 7;
 let feedSearchQuery = '';
 let selectedArticles = new Set();
+let articlesPage = 1;           // current pagination page for article list
+let lastArticlesContext = '';   // detects when feed/filter/search changes to reset page
+const ARTICLES_PER_PAGE = 75;  // articles shown per page
+
 // Extract full article content from a URL
 async function extractArticle(url) {
   const proxies = [
@@ -142,12 +146,101 @@ function getFeedColor(feedId) {
   return colors[Math.abs(hash) % colors.length];
 }
 
+// ── Targeted article-pane update ────────────────────────────────────────────
+// Replaces the second full renderApp() call when an article finishes loading.
+// Only updates #article-content, leaving the article list (and its scroll
+// position) completely untouched.
+function renderArticlePaneContent() {
+  const contentDiv = document.getElementById('article-content');
+  if (!contentDiv || !selectedArticle) return;
+
+  if (isLoadingArticle) {
+    contentDiv.innerHTML = `
+      <div style="text-align: center; padding: 40px; color: #666;">
+        <p style="font-size: 16px;">Loading full article...</p>
+      </div>
+    `;
+    return;
+  }
+
+  contentDiv.innerHTML = `
+    <h1 style="font-size: 28px; font-weight: 600; line-height: 1.3; margin: 0 0 16px 0; color: #1a1a1a;">
+      ${stripHtml(selectedArticle.title)}
+    </h1>
+    <div style="font-size: 14px; color: #666; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #eee;">
+      ${selectedArticle.author ? `<span>${stripHtml(selectedArticle.author)}</span> · ` : ''}
+      ${selectedArticle.publishedAt ? new Date(selectedArticle.publishedAt).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : ''}
+    </div>
+    <div id="article-text" style="font-size: ${articleFontSize}px; line-height: 1.7; color: #333;">
+      ${formatArticleContent(selectedArticle.content || selectedArticle.summary || 'No content available.', selectedArticle.id)}
+    </div>
+  `;
+  // Always scroll the reading pane to top when new content arrives
+  contentDiv.scrollTop = 0;
+}
+
+// ── Reading-position persistence ─────────────────────────────────────────────
+// Saves the current feed + article selection to preferences so the next launch
+// reopens to the same place. Only writes when something actually changed.
+async function saveReadingPosition() {
+  const data = getData();
+  const prefs = data.preferences;
+  const newFeedId = currentFeedId || null;
+  const newArticleId = selectedArticle?.id || null;
+  if (prefs.lastFeedId !== newFeedId || prefs.lastArticleId !== newArticleId) {
+    await updateData({
+      preferences: { ...prefs, lastFeedId: newFeedId, lastArticleId: newArticleId }
+    });
+  }
+}
+
+// Restores feed + article selection from the last session (called before renderApp).
+function restoreReadingPosition() {
+  const data = getData();
+  const { lastFeedId, lastArticleId } = data.preferences;
+  if (lastFeedId) {
+    const feed = getAllFeeds().find(f => f.id === lastFeedId);
+    if (feed) currentFeedId = lastFeedId;
+  }
+  if (lastArticleId) {
+    const article = data.articles.find(a => a.id === lastArticleId);
+    if (article) selectedArticle = article;
+  }
+}
+
+// ── App initialisation ────────────────────────────────────────────────────────
 async function init() {
   console.log('Fetch N Feed starting...');
+
+  // Show a friendly loading screen immediately — replaces the blank white flash
+  const app = document.querySelector('#app');
+  if (app) {
+    app.innerHTML = `
+      <div style="display: flex; align-items: center; justify-content: center;
+                  height: 100vh; background: #fafafa;
+                  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+        <div style="text-align: center; color: #666;">
+          <div style="font-size: 56px; margin-bottom: 16px;">📡</div>
+          <h2 style="font-size: 22px; font-weight: 600; color: #1a1a1a; margin: 0 0 8px 0;">
+            Fetch N Feed
+          </h2>
+          <p style="font-size: 14px; color: #888; margin: 0;">Loading your feeds…</p>
+        </div>
+      </div>
+    `;
+  }
+
   await loadData();
+
+  // Clean up articles older than the retention window (keeps the DB lean).
+  // Articles that are starred, highlighted, or have notes are always preserved.
+  const cleaned = await cleanupOldArticles();
+  if (cleaned > 0) console.log(`Startup cleanup: removed ${cleaned} old articles`);
+
+  // Reopen to where the user left off
+  restoreReadingPosition();
+
   renderApp();
-  
-  // Keyboard shortcuts
   document.addEventListener('keydown', handleKeyboard);
 }
 
@@ -267,29 +360,35 @@ function handleKeyboard(e) {
   }
 }
 async function selectArticle(article) {
-  // Save scroll position to global variable before re-render
+  // Preserve the article list scroll position before the first renderApp() call
   const articleList = document.getElementById('articles-list');
   savedArticleListScroll = articleList ? articleList.scrollTop : 0;
-  
+
   await markArticleRead(article.id);
   selectedArticle = article;
   isLoadingArticle = true;
+  // First render: builds the 3-panel layout and shows the loading spinner
   renderApp();
-  
+
   const textContent = stripHtml(article.content || '');
-  const isTruncated = textContent.includes('Read the full story') || 
-                     textContent.includes('Continue reading') || 
-                     textContent.includes('Read more') || 
-                     textContent.length < 500;
+  const isTruncated = textContent.includes('Read the full story') ||
+                      textContent.includes('Continue reading') ||
+                      textContent.includes('Read more') ||
+                      textContent.length < 500;
   if (!article.content || isTruncated) {
     const result = await extractArticle(article.url);
     if (result.success && result.content) {
       selectedArticle = { ...article, content: result.content };
     }
   }
-  
+
   isLoadingArticle = false;
-  renderApp();
+  // Targeted update: only swaps the article content div.
+  // The article list DOM is never touched, so scroll position is preserved.
+  renderArticlePaneContent();
+
+  // Persist reading position for next launch
+  saveReadingPosition();
 }
 
 function showKeyboardHelp() {
@@ -1172,11 +1271,33 @@ function renderFeedsList() {
   container.innerHTML = feeds.map(feed => {
     const articleCount = allArticles.filter(a => a.feedId === feed.id && !a.isArchived).length;
     const unreadCount = allArticles.filter(a => a.feedId === feed.id && !a.isRead && !a.isArchived).length;
+    const isActive = currentFeedId === feed.id;
+
+    // Badge: blue pill when there are unread items; subtle grey when all read
+    const badge = unreadCount > 0
+      ? `<span style="
+            background: ${isActive ? 'rgba(255,255,255,0.30)' : '#007aff'};
+            color: white; font-size: 11px; font-weight: 700;
+            padding: 1px 7px; border-radius: 10px; margin-left: 6px;
+            flex-shrink: 0;">${unreadCount}</span>`
+      : `<span style="color: ${isActive ? 'rgba(255,255,255,0.5)' : '#ccc'};
+                      font-size: 11px; margin-left: 6px; flex-shrink: 0;">
+            ${articleCount}</span>`;
+
     return `
       <div style="display: flex; align-items: center; margin-bottom: 2px;">
-        <a href="#" class="feed-link" data-feed-id="${feed.id}" 
-          style="flex: 1; padding: 10px 12px; background: ${currentFeedId === feed.id ? '#007aff' : 'transparent'}; color: ${currentFeedId === feed.id ? 'white' : '#333'}; text-decoration: none; border-radius: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px;">
-          ${feed.title} <span style="color: ${currentFeedId === feed.id ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">(${unreadCount}/${articleCount})</span>
+        <a href="#" class="feed-link" data-feed-id="${feed.id}"
+          style="flex: 1; display: flex; align-items: center;
+                 padding: 10px 12px;
+                 background: ${isActive ? '#007aff' : 'transparent'};
+                 color: ${isActive ? 'white' : '#333'};
+                 text-decoration: none; border-radius: 6px; font-size: 14px;
+                 overflow: hidden; min-width: 0;">
+          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                       font-weight: ${unreadCount > 0 ? '600' : 'normal'};">
+            ${feed.title}
+          </span>
+          ${badge}
         </a>
         <button class="btn-feed-menu" data-feed-id="${feed.id}" style="background: none; border: none; color: #ccc; cursor: pointer; padding: 4px 6px; font-size: 14px;" onmouseover="this.style.color='#007aff'" onmouseout="this.style.color='#ccc'" title="Add to folder">📁</button>
         <button class="btn-delete-feed" data-feed-id="${feed.id}" style="background: none; border: none; color: #ccc; cursor: pointer; padding: 4px 8px; font-size: 16px;" onmouseover="this.style.color='#ff3b30'" onmouseout="this.style.color='#ccc'">×</button>
@@ -1363,17 +1484,48 @@ function renderArticles() {
     return;
   }
   
-  // Limit articles for performance (render max 100)
-  const maxArticles = 100;
-  const limitedArticles = articles.slice(0, maxArticles);
-  
-  switch (currentLayout) {
-    case 'grid': renderGridLayout(container, limitedArticles, feeds); break;
-    case 'magazine': renderMagazineLayout(container, limitedArticles, feeds); break;
-    case 'inline': renderInlineLayout(container, limitedArticles, feeds); break;
-    default: renderListLayout(container, limitedArticles, feeds);
+  // Reset to page 1 whenever the feed/filter/search context changes
+  const newContext = `${currentFeedId}|${currentFolderId}|${currentFilter}|${searchQuery}`;
+  if (newContext !== lastArticlesContext) {
+    articlesPage = 1;
+    lastArticlesContext = newContext;
   }
-  // Restore scroll position if saved
+
+  // Paginate: show ARTICLES_PER_PAGE at a time
+  const pagedArticles = articles.slice(0, articlesPage * ARTICLES_PER_PAGE);
+  const hasMore = articles.length > pagedArticles.length;
+  const remaining = articles.length - pagedArticles.length;
+
+  switch (currentLayout) {
+    case 'grid': renderGridLayout(container, pagedArticles, feeds); break;
+    case 'magazine': renderMagazineLayout(container, pagedArticles, feeds); break;
+    case 'inline': renderInlineLayout(container, pagedArticles, feeds); break;
+    default: renderListLayout(container, pagedArticles, feeds);
+  }
+
+  // Append "Load more" button when there are hidden articles
+  if (hasMore) {
+    const loadMoreDiv = document.createElement('div');
+    loadMoreDiv.style.cssText = 'text-align: center; padding: 20px 0 32px 0;';
+    loadMoreDiv.innerHTML = `
+      <button type="button" id="btn-load-more"
+        style="padding: 10px 28px; font-size: 14px; cursor: pointer;
+               background: #e8e8e8; color: #333; border: none; border-radius: 6px;
+               font-weight: 500;">
+        Load more <span style="color:#888; font-weight:400;">(${remaining} remaining)</span>
+      </button>
+    `;
+    container.appendChild(loadMoreDiv);
+    document.getElementById('btn-load-more').addEventListener('click', () => {
+      articlesPage++;
+      // Save scroll position so "Load more" doesn't jump
+      const list = document.getElementById('articles-list');
+      savedArticleListScroll = list ? list.scrollTop : 0;
+      renderArticles();
+    });
+  }
+
+  // Restore scroll position if saved (e.g. after article selection)
   if (savedArticleListScroll > 0) {
     const articlesList = document.getElementById('articles-list');
     if (articlesList) articlesList.scrollTop = savedArticleListScroll;
@@ -2151,25 +2303,27 @@ function attachArticleClickHandlers(articles) {
       
       // Normal click - clear selection and open article
       selectedArticles.clear();
-      
-      // Save scroll position before re-render
+
+      // Preserve article list scroll position before the full re-render
       const articleList = document.getElementById('articles-list');
       savedArticleListScroll = articleList ? articleList.scrollTop : 0;
-      
+
       await markArticleRead(articleId);
       selectedArticle = article;
       isLoadingArticle = true;
-      renderApp();
-      
+      renderApp(); // First render: layout + loading spinner
+
       const textContent = stripHtml(article.content || '');
       const isTruncated = textContent.includes('Read the full story') || textContent.includes('Continue reading') || textContent.includes('Read more') || textContent.length < 500;
       if (!article.content || isTruncated) {
         const result = await extractArticle(article.url);
         if (result.success && result.content) selectedArticle = { ...article, content: result.content };
       }
-      
+
       isLoadingArticle = false;
-      renderApp();
+      // Targeted update: only the article content div changes; list scroll is untouched
+      renderArticlePaneContent();
+      saveReadingPosition();
     });
   });
 }
@@ -2195,17 +2349,33 @@ async function handleAddFeed() {
 async function handleRefreshAll() {
   const statusBar = document.getElementById('status-bar');
   const feeds = getAllFeeds();
-  
-  if (feeds.length === 0) { statusBar.textContent = 'No feeds to refresh. Add a feed first!'; return; }
-  
-  const maxAgeDays = parseInt(document.getElementById('fetch-age-select').value) || 7;
-  
-  statusBar.textContent = 'Refreshing all feeds...';
-  const results = await refreshAllFeeds(maxAgeDays);
+
+  if (feeds.length === 0) {
+    statusBar.textContent = 'No feeds to refresh. Add a feed first!';
+    return;
+  }
+
+  const maxAgeDays = parseInt(document.getElementById('fetch-age-select')?.value) || 7;
+
+  // Disable the Refresh button while running so it can't be double-clicked
+  const refreshBtn = document.getElementById('btn-refresh-all');
+  if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = '↻ Refreshing…'; }
+
+  statusBar.textContent = `Starting refresh of ${feeds.length} feeds…`;
+
+  const results = await refreshAllFeeds(maxAgeDays, (done, total, currentResults) => {
+    const newSoFar = currentResults.reduce((sum, r) => sum + (r.newArticles || 0), 0);
+    statusBar.textContent = `Refreshing… ${done} / ${total} feeds  ·  ${newSoFar} new articles`;
+    // Render new articles as they arrive so the list updates in real time
+    renderArticles();
+  });
+
   const totalNew = results.reduce((sum, r) => sum + (r.newArticles || 0), 0);
-  const failures = results.filter(r => !r.success).length;
-  
-  statusBar.textContent = `Refreshed ${results.length} feeds. ${totalNew} new articles.${failures > 0 ? ` ${failures} failed.` : ''}`;
+  const failures  = results.filter(r => !r.success).length;
+
+  if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = '↻ Refresh'; }
+
+  statusBar.textContent = `✓ Refreshed ${results.length} feeds — ${totalNew} new articles${failures > 0 ? `  ·  ${failures} failed` : ''}`;
   renderArticles();
 }
 

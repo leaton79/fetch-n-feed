@@ -213,7 +213,7 @@ export function renderNotesView(renderApp) {
     if (state.selectedNotes.size === 0) return;
     await deleteMultipleNotes(Array.from(state.selectedNotes));
     state.selectedNotes.clear();
-    renderApp();
+    renderNotesView(renderApp);
   });
 
   document.querySelectorAll('.note-checkbox').forEach(checkbox => {
@@ -232,7 +232,7 @@ export function renderNotesView(renderApp) {
     btn.addEventListener('click', () => {
       const noteId = btn.dataset.noteId;
       const note = notes.find(n => n.id === noteId);
-      if (note) showEditNoteDialog(note, renderApp);
+      if (note) showEditNoteDialog(note, () => renderNotesView(renderApp));
     });
   });
 
@@ -288,7 +288,7 @@ export function renderNotesView(renderApp) {
     btn.addEventListener('click', async () => {
       const noteId = btn.dataset.noteId;
       await deleteNote(noteId);
-      renderApp();
+      renderNotesView(renderApp);
     });
   });
 }

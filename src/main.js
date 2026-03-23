@@ -125,17 +125,17 @@ function handleKeyboard(e) {
         e.preventDefault();
         toggleArticleStar(state.selectedArticle.id).then(() => {
           state.selectedArticle = { ...state.selectedArticle, isStarred: !state.selectedArticle.isStarred };
-          renderApp();
+          refreshAll();
         });
       }
       break;
-      
+
     case 'a':
       if (state.selectedArticle) {
         e.preventDefault();
         toggleArticleArchive(state.selectedArticle.id).then(() => {
           state.selectedArticle = { ...state.selectedArticle, isArchived: !state.selectedArticle.isArchived };
-          renderApp();
+          refreshAll();
         });
       }
       break;
@@ -206,45 +206,7 @@ function renderApp() {
         
         <input type="file" id="opml-file-input" accept=".opml,.xml" style="display: none;">
         
-      ${(() => {
-          const allArticles = getData().articles;
-          const allCount = allArticles.filter(a => !a.isArchived).length;
-          const unreadCount = allArticles.filter(a => !a.isRead && !a.isArchived).length;
-          const starredCount = allArticles.filter(a => a.isStarred).length;
-          const archivedCount = allArticles.filter(a => a.isArchived).length;
-          return `
-            <div style="margin-bottom: 4px;">
-              <a href="#" id="btn-all-articles" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.currentFilter === 'all' && state.currentFeedId === null ? '#007aff' : 'transparent'}; color: ${state.currentFilter === 'all' && state.currentFeedId === null ? 'white' : '#333'}; text-decoration: none; border-radius: 6px; font-weight: ${state.currentFilter === 'all' ? '500' : 'normal'};">
-                <span>📚 All Articles</span>
-                <span style="color: ${state.currentFilter === 'all' && state.currentFeedId === null ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${allCount}</span>
-              </a>
-            </div>
-            <div style="margin-bottom: 4px;">
-              <a href="#" id="btn-unread" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.currentFilter === 'unread' ? '#007aff' : 'transparent'}; color: ${state.currentFilter === 'unread' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
-                <span>📩 Unread</span>
-                <span style="color: ${state.currentFilter === 'unread' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${unreadCount}</span>
-              </a>
-            </div>
-            <div style="margin-bottom: 4px;">
-              <a href="#" id="btn-starred" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.currentFilter === 'starred' ? '#007aff' : 'transparent'}; color: ${state.currentFilter === 'starred' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
-                <span>⭐ Starred</span>
-                <span style="color: ${state.currentFilter === 'starred' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${starredCount}</span>
-              </a>
-            </div>
-            <div style="margin-bottom: 8px;">
-              <a href="#" id="btn-archived" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.currentFilter === 'archived' ? '#007aff' : 'transparent'}; color: ${state.currentFilter === 'archived' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
-                <span>📦 Archived</span>
-                <span style="color: ${state.currentFilter === 'archived' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${archivedCount}</span>
-              </a>
-            </div>
-            <div style="margin-bottom: 4px;">
-              <a href="#" id="btn-notes" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.showNotesView ? '#007aff' : 'transparent'}; color: ${state.showNotesView ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
-                <span>📝 Notes</span>
-                <span style="color: ${state.showNotesView ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${(getData().notes || []).length}</span>
-              </a>
-            </div>
-          `;
-        })()}
+      <div id="sidebar-filters"></div>
         
         <div style="display: flex; justify-content: space-between; align-items: center; margin: 16px 0 8px 0;">
           <span style="font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">Folders</span>
@@ -417,7 +379,7 @@ function renderApp() {
       }
       
       statusBar.textContent = `Imported ${imported} feeds${skipped > 0 ? `, ${skipped} already existed` : ''}. Fetching articles...`;
-      renderApp();
+      renderFeedsList(renderApp); renderArticles(renderApp);
       
       // Auto-refresh to fetch articles
       if (imported > 0) {
@@ -435,50 +397,7 @@ function renderApp() {
     e.target.value = '';
   });
   document.getElementById('btn-add-folder').addEventListener('click', () => {
-    showFolderDialog(renderApp);
-  });
-  document.getElementById('btn-all-articles').addEventListener('click', (e) => {
-    e.preventDefault();
-    state.showNotesView = false;
-    state.currentFeedId = null;
-    state.currentFilter = 'all';
-    state.selectedArticle = null;
-    renderApp();
-  });
-  
-  document.getElementById('btn-unread').addEventListener('click', (e) => {
-    e.preventDefault();
-    state.showNotesView = false;
-    state.currentFeedId = null;
-    state.currentFilter = 'unread';
-    state.selectedArticle = null;
-    renderApp();
-  });
-  
-  document.getElementById('btn-starred').addEventListener('click', (e) => {
-    e.preventDefault();
-    state.showNotesView = false;
-    state.currentFeedId = null;
-    state.currentFilter = 'starred';
-    state.selectedArticle = null;
-    renderApp();
-  });
-  
-  document.getElementById('btn-archived').addEventListener('click', (e) => {
-    e.preventDefault();
-    state.showNotesView = false;
-    state.currentFeedId = null;
-    state.currentFilter = 'archived';
-    state.selectedArticle = null;
-    renderApp();
-  });
-  document.getElementById('btn-notes').addEventListener('click', (e) => {
-    e.preventDefault();
-    state.showNotesView = true;
-    state.currentFeedId = null;
-    state.currentFolderId = null;
-    state.selectedArticle = null;
-    renderApp();
+    showFolderDialog(() => { renderSidebarFilters(); renderFeedsList(renderApp); renderArticles(renderApp); });
   });
   document.getElementById('sort-select').addEventListener('change', (e) => {
     state.currentSort = e.target.value;
@@ -552,7 +471,7 @@ function renderApp() {
     );
     
     await updateData({ articles: updatedArticles });
-    renderArticles(renderApp);
+    refreshSidebar(); refreshList();
   });
   const deleteSelectedBtn = document.getElementById('btn-delete-selected');
   if (deleteSelectedBtn) {
@@ -584,7 +503,7 @@ function renderApp() {
       if (state.selectedArticle) {
         await toggleArticleStar(state.selectedArticle.id);
         state.selectedArticle = { ...state.selectedArticle, isStarred: !state.selectedArticle.isStarred };
-        renderApp();
+        refreshAll();
       }
     });
   }
@@ -595,7 +514,7 @@ function renderApp() {
       if (state.selectedArticle) {
         await toggleArticleArchive(state.selectedArticle.id);
         state.selectedArticle = { ...state.selectedArticle, isArchived: !state.selectedArticle.isArchived };
-        renderApp();
+        refreshAll();
       }
     });
   }
@@ -606,7 +525,7 @@ function renderApp() {
       if (state.selectedArticle) {
         const selection = window.getSelection();
         const highlightedText = selection.toString().trim();
-        showAddNoteDialog(state.selectedArticle, highlightedText, renderApp);
+        showAddNoteDialog(state.selectedArticle, highlightedText, () => { renderSidebarFilters(); renderArticlePaneContent(); });
       }
     });
   }
@@ -768,7 +687,7 @@ function renderApp() {
         state.currentFeedId = null;
         state.currentFilter = 'all';
         state.selectedArticle = null;
-        renderApp();
+        renderFeedsList(renderApp); renderArticles(renderApp);
       }
     });
   });
@@ -779,10 +698,10 @@ function renderApp() {
       const folderId = btn.dataset.folderId;
       await deleteFolder(folderId);
       if (state.currentFolderId === folderId) state.currentFolderId = null;
-      renderApp();
+      renderFeedsList(renderApp); renderArticles(renderApp);
     });
   });
-  
+
   document.querySelectorAll('.btn-remove-from-folder').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -792,11 +711,11 @@ function renderApp() {
       if (feed) {
         const newFolderIds = (feed.folderIds || []).filter(id => id !== folderId);
         await updateFeed(feedId, { folderIds: newFolderIds });
-        renderApp();
+        renderFeedsList(renderApp); renderArticles(renderApp);
       }
     });
   });
-  
+
   // Feed links inside folders
   document.querySelectorAll('#folders-list .feed-link').forEach(link => {
     link.addEventListener('click', (e) => {
@@ -805,13 +724,129 @@ function renderApp() {
       state.currentFolderId = null;
       state.currentFilter = 'all';
       state.selectedArticle = null;
-      renderApp();
+      renderFeedsList(renderApp); renderArticles(renderApp);
     });
   });
 }
   renderFoldersList();
   renderFeedsList(renderApp);
   renderArticles(renderApp);
+  renderSidebarFilters();
+}
+
+// ── renderSidebarFilters — scoped update for the 5 filter buttons ─────────────
+
+function renderSidebarFilters() {
+  const container = document.getElementById('sidebar-filters');
+  if (!container) return;
+
+  const allArticles = getData().articles;
+  const allCount      = allArticles.filter(a => !a.isArchived).length;
+  const unreadCount   = allArticles.filter(a => !a.isRead && !a.isArchived).length;
+  const starredCount  = allArticles.filter(a => a.isStarred).length;
+  const archivedCount = allArticles.filter(a => a.isArchived).length;
+  const notesCount    = (getData().notes || []).length;
+
+  container.innerHTML = `
+    <div style="margin-bottom: 4px;">
+      <a href="#" id="btn-all-articles" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.currentFilter === 'all' && state.currentFeedId === null ? '#007aff' : 'transparent'}; color: ${state.currentFilter === 'all' && state.currentFeedId === null ? 'white' : '#333'}; text-decoration: none; border-radius: 6px; font-weight: ${state.currentFilter === 'all' ? '500' : 'normal'};">
+        <span>📚 All Articles</span>
+        <span style="color: ${state.currentFilter === 'all' && state.currentFeedId === null ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${allCount}</span>
+      </a>
+    </div>
+    <div style="margin-bottom: 4px;">
+      <a href="#" id="btn-unread" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.currentFilter === 'unread' ? '#007aff' : 'transparent'}; color: ${state.currentFilter === 'unread' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
+        <span>📩 Unread</span>
+        <span style="color: ${state.currentFilter === 'unread' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${unreadCount}</span>
+      </a>
+    </div>
+    <div style="margin-bottom: 4px;">
+      <a href="#" id="btn-starred" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.currentFilter === 'starred' ? '#007aff' : 'transparent'}; color: ${state.currentFilter === 'starred' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
+        <span>⭐ Starred</span>
+        <span style="color: ${state.currentFilter === 'starred' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${starredCount}</span>
+      </a>
+    </div>
+    <div style="margin-bottom: 8px;">
+      <a href="#" id="btn-archived" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.currentFilter === 'archived' ? '#007aff' : 'transparent'}; color: ${state.currentFilter === 'archived' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
+        <span>📦 Archived</span>
+        <span style="color: ${state.currentFilter === 'archived' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${archivedCount}</span>
+      </a>
+    </div>
+    <div style="margin-bottom: 4px;">
+      <a href="#" id="btn-notes" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.showNotesView ? '#007aff' : 'transparent'}; color: ${state.showNotesView ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
+        <span>📝 Notes</span>
+        <span style="color: ${state.showNotesView ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${notesCount}</span>
+      </a>
+    </div>
+  `;
+
+  document.getElementById('btn-all-articles').addEventListener('click', (e) => {
+    e.preventDefault();
+    state.showNotesView = false;
+    state.currentFeedId = null;
+    state.currentFilter = 'all';
+    state.selectedArticle = null;
+    renderSidebarFilters();
+    renderArticles(renderApp);
+  });
+
+  document.getElementById('btn-unread').addEventListener('click', (e) => {
+    e.preventDefault();
+    state.showNotesView = false;
+    state.currentFeedId = null;
+    state.currentFilter = 'unread';
+    state.selectedArticle = null;
+    renderSidebarFilters();
+    renderArticles(renderApp);
+  });
+
+  document.getElementById('btn-starred').addEventListener('click', (e) => {
+    e.preventDefault();
+    state.showNotesView = false;
+    state.currentFeedId = null;
+    state.currentFilter = 'starred';
+    state.selectedArticle = null;
+    renderSidebarFilters();
+    renderArticles(renderApp);
+  });
+
+  document.getElementById('btn-archived').addEventListener('click', (e) => {
+    e.preventDefault();
+    state.showNotesView = false;
+    state.currentFeedId = null;
+    state.currentFilter = 'archived';
+    state.selectedArticle = null;
+    renderSidebarFilters();
+    renderArticles(renderApp);
+  });
+
+  document.getElementById('btn-notes').addEventListener('click', (e) => {
+    e.preventDefault();
+    state.showNotesView = true;
+    state.currentFeedId = null;
+    state.currentFolderId = null;
+    state.selectedArticle = null;
+    renderSidebarFilters();
+    renderArticles(renderApp);
+  });
+}
+
+// ── Scoped update helpers — call these instead of renderApp() for surgical DOM updates ──
+
+function refreshSidebar() {
+  renderSidebarFilters();
+  renderFeedsList(renderApp);
+}
+
+function refreshList() {
+  renderArticles(renderApp);
+}
+
+function refreshAll() {
+  renderSidebarFilters();
+  renderFeedsList(renderApp);
+  renderArticles(renderApp);
+  renderArticlePaneContent();
 }
 
 init();

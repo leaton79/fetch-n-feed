@@ -336,7 +336,7 @@ export function attachArticleClickHandlers(articles, renderApp) {
         } else {
           state.selectedArticles.add(articleId);
         }
-        renderApp();
+        renderArticles(renderApp);
         return;
       }
 

@@ -41,7 +41,7 @@ export function showKeyboardHelp() {
 
 // ── New folder dialog ─────────────────────────────────────────────────────────
 
-export function showFolderDialog(renderApp) {
+export function showFolderDialog(onDone) {
   const dialogHtml = `
     <div id="folder-dialog" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
       <div style="background: white; border-radius: 12px; padding: 24px; width: 300px; box-shadow: 0 8px 32px rgba(0,0,0,0.2);">
@@ -74,7 +74,7 @@ export function showFolderDialog(renderApp) {
     if (name) {
       await addFolder(name);
       closeDialog();
-      renderApp();
+      onDone();
     }
   };
 
@@ -91,7 +91,7 @@ export function showFolderDialog(renderApp) {
 
 // ── Edit note dialog ──────────────────────────────────────────────────────────
 
-export function showEditNoteDialog(note, renderApp) {
+export function showEditNoteDialog(note, onDone) {
   const noteTags = getAllNoteTags();
 
   const dialogHtml = `
@@ -179,7 +179,7 @@ export function showEditNoteDialog(note, renderApp) {
     });
 
     closeDialog();
-    renderApp();
+    onDone();
   });
 
   dialog.addEventListener('click', (e) => {
@@ -189,7 +189,7 @@ export function showEditNoteDialog(note, renderApp) {
 
 // ── Add note dialog ───────────────────────────────────────────────────────────
 
-export function showAddNoteDialog(article, highlightedText = '', renderApp) {
+export function showAddNoteDialog(article, highlightedText = '', onDone) {
   const feed     = getAllFeeds().find(f => f.id === article.feedId);
   const noteTags = getAllNoteTags();
 
@@ -295,7 +295,7 @@ export function showAddNoteDialog(article, highlightedText = '', renderApp) {
     });
 
     closeDialog();
-    renderApp();
+    onDone();
   });
 
   dialog.addEventListener('click', (e) => {

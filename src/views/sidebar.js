@@ -3,6 +3,7 @@ import { getData } from '../database.js';
 import { downloadOPML, parseOPML } from '../opml.js';
 import { state } from '../state.js';
 import { showFolderDialog } from './dialogs.js';
+import { renderArticles } from './articleList.js';
 
 export function renderFeedsList(renderApp) {
   const container = document.getElementById('feeds-list');
@@ -63,7 +64,7 @@ export function renderFeedsList(renderApp) {
       state.currentFolderId = null;
       state.currentFilter = 'all';
       state.selectedArticle = null;
-      renderApp();
+      renderFeedsList(renderApp); renderArticles(renderApp);
     });
   });
 
@@ -75,7 +76,7 @@ export function renderFeedsList(renderApp) {
       if (feedId) {
         await deleteFeed(feedId);
         if (state.currentFeedId === feedId) state.currentFeedId = null;
-        renderApp();
+        renderFeedsList(renderApp); renderArticles(renderApp);
       }
     });
   });
@@ -132,7 +133,7 @@ export function renderFeedsList(renderApp) {
 
           await updateFeed(feedId, { folderIds: newFolderIds });
           menu.remove();
-          renderApp();
+          renderFeedsList(renderApp);
         });
       });
 
@@ -164,7 +165,7 @@ export async function handleAddFeed(renderApp) {
   const result = await refreshFeed(feed.id);
 
   statusBar.textContent = result.success ? `Added "${feed.title}" with ${result.newArticles} articles` : `Added feed but fetch failed: ${result.error}`;
-  renderApp();
+  renderFeedsList(renderApp); renderArticles(renderApp);
 }
 
 export async function handleRefreshAll(renderApp, renderArticles) {

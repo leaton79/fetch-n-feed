@@ -3,7 +3,7 @@
 // renderApp is passed as a callback parameter rather than imported from main.js
 // to keep the dependency graph acyclic (main → views, never views → main).
 
-import { addFolder, getAllFeeds, getAllNoteTags, addNoteTag, addNote, updateNote } from '../feedManager.js';
+import { addFolder, getAllFeeds, getAllNoteTags, addNoteTag, addNote, updateNote, findStaleFeeds, pruneStaleFeeds } from '../feedManager.js';
 import { stripHtml } from '../utils.js';
 
 // ── Keyboard shortcuts overlay ────────────────────────────────────────────────
@@ -301,4 +301,114 @@ export function showAddNoteDialog(article, highlightedText = '', onDone) {
   dialog.addEventListener('click', (e) => {
     if (e.target === dialog) closeDialog();
   });
+}
+
+// ── Prune stale feeds dialog ──────────────────────────────────────────────────
+// Shows feeds whose last article is older than monthsThreshold months.
+// Each feed has a checkbox (pre-checked) so you can deselect any you want
+// to keep. Confirming deletes the checked feeds and their articles.
+
+export async function showPruneStaleDialog(monthsThreshold = 18, onDone) {
+  const stale = findStaleFeeds(monthsThreshold);
+
+  if (stale.length === 0) {
+    const notice = document.createElement('div');
+    notice.style.cssText = `
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: #1a1a1a; color: white; padding: 12px 20px; border-radius: 8px;
+      font-size: 14px; z-index: 2000; box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+      white-space: nowrap;`;
+    notice.textContent = `✓ All feeds have published within the last ${monthsThreshold} months — nothing to remove.`;
+    document.body.appendChild(notice);
+    setTimeout(() => notice.remove(), 3500);
+    return;
+  }
+
+  const fmt = (isoStr) => {
+    if (!isoStr) return 'No articles ever fetched';
+    return new Date(isoStr).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  };
+
+  const rowsHtml = stale.map(({ feed, lastPublished }) => `
+    <label style="display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+                  border-radius: 6px; cursor: pointer;"
+           onmouseover="this.style.background='#f5f5f5'" onmouseout="this.style.background='transparent'">
+      <input type="checkbox" class="prune-checkbox" data-feed-id="${feed.id}"
+             checked style="width: 16px; height: 16px; cursor: pointer; flex-shrink: 0;">
+      <span style="flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+            title="${feed.title}">${feed.title}</span>
+      <span style="font-size: 12px; color: #888; flex-shrink: 0;">Last post: ${fmt(lastPublished)}</span>
+    </label>
+  `).join('');
+
+  document.body.insertAdjacentHTML('beforeend', `
+    <div id="prune-dialog" style="position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+         display: flex; align-items: center; justify-content: center; z-index: 1000;">
+      <div style="background: white; border-radius: 12px; padding: 24px; width: 560px;
+                  max-height: 80vh; display: flex; flex-direction: column;
+                  box-shadow: 0 8px 32px rgba(0,0,0,0.2);">
+        <h3 style="margin: 0 0 6px 0; font-size: 18px;">🧹 Prune Stale Feeds</h3>
+        <p style="margin: 0 0 16px 0; font-size: 13px; color: #666;">
+          ${stale.length} feed${stale.length !== 1 ? 's have' : ' has'} not published anything
+          in the last ${monthsThreshold} months. Uncheck any you want to keep, then click Remove.
+        </p>
+        <div style="flex: 1; overflow-y: auto; border: 1px solid #e8e8e8; border-radius: 8px;
+                    padding: 4px 0; margin-bottom: 16px; max-height: 360px;">
+          ${rowsHtml}
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <label style="font-size: 13px; color: #666; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+            <input type="checkbox" id="prune-select-all" checked style="cursor: pointer;">
+            Select all
+          </label>
+          <div style="display: flex; gap: 8px;">
+            <button id="prune-cancel"
+              style="padding: 10px 20px; font-size: 14px; cursor: pointer;
+                     background: #e8e8e8; border: none; border-radius: 6px;">Cancel</button>
+            <button id="prune-confirm"
+              style="padding: 10px 20px; font-size: 14px; cursor: pointer; background: #ff3b30;
+                     color: white; border: none; border-radius: 6px; font-weight: 500;">
+              Remove <span id="prune-count">${stale.length}</span> feed${stale.length !== 1 ? 's' : ''}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `);
+
+  const dialog     = document.getElementById('prune-dialog');
+  const confirmBtn = document.getElementById('prune-confirm');
+  const countSpan  = document.getElementById('prune-count');
+  const selectAll  = document.getElementById('prune-select-all');
+  const closeDialog = () => dialog.remove();
+
+  const updateCount = () => {
+    const n = dialog.querySelectorAll('.prune-checkbox:checked').length;
+    countSpan.textContent    = n;
+    confirmBtn.disabled      = n === 0;
+    confirmBtn.style.opacity = n === 0 ? '0.4' : '1';
+  };
+
+  dialog.querySelectorAll('.prune-checkbox').forEach(cb =>
+    cb.addEventListener('change', updateCount)
+  );
+
+  selectAll.addEventListener('change', () => {
+    dialog.querySelectorAll('.prune-checkbox').forEach(cb => { cb.checked = selectAll.checked; });
+    updateCount();
+  });
+
+  document.getElementById('prune-cancel').addEventListener('click', closeDialog);
+
+  confirmBtn.addEventListener('click', async () => {
+    const toRemove = [...dialog.querySelectorAll('.prune-checkbox:checked')].map(cb => cb.dataset.feedId);
+    if (toRemove.length === 0) { closeDialog(); return; }
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = 'Removing…';
+    const removed = await pruneStaleFeeds(toRemove);
+    closeDialog();
+    if (onDone) onDone(removed);
+  });
+
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) closeDialog(); });
 }

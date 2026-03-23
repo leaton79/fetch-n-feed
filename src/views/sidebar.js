@@ -2,7 +2,7 @@ import { addFeed, getAllFeeds, getAllArticles, deleteFeed, refreshAllFeeds, addF
 import { getData } from '../database.js';
 import { downloadOPML, parseOPML } from '../opml.js';
 import { state } from '../state.js';
-import { showFolderDialog } from './dialogs.js';
+import { showFolderDialog, showPruneStaleDialog } from './dialogs.js';
 import { renderArticles } from './articleList.js';
 
 export function renderFeedsList(renderApp) {
@@ -166,6 +166,15 @@ export async function handleAddFeed(renderApp) {
 
   statusBar.textContent = result.success ? `Added "${feed.title}" with ${result.newArticles} articles` : `Added feed but fetch failed: ${result.error}`;
   renderFeedsList(renderApp); renderArticles(renderApp);
+}
+
+export function handlePruneStale(renderApp) {
+  showPruneStaleDialog(18, (removed) => {
+    const statusBar = document.getElementById('status-bar');
+    if (statusBar) statusBar.textContent = `🧹 Removed ${removed} stale feed${removed !== 1 ? 's' : ''}`;
+    renderFeedsList(renderApp);
+    renderArticles(renderApp);
+  });
 }
 
 export async function handleRefreshAll(renderApp, renderArticles) {

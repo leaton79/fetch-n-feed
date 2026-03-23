@@ -447,6 +447,64 @@ export async function refreshAllFeeds(maxAgeDays = 7, onProgress = null) {
   return results;
 }
 
+// ============ STALE FEED PRUNING ============
+
+/**
+ * Returns an array of { feed, lastPublished } objects for every feed whose
+ * most-recent article is older than `monthsThreshold` months ago (or the feed
+ * has never published anything and was added before that cutoff).
+ *
+ * Feeds that were added recently but have no articles yet are excluded so a
+ * brand-new feed that hasn't been refreshed yet doesn't get flagged.
+ */
+export function findStaleFeeds(monthsThreshold = 18) {
+  const data = getData();
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - monthsThreshold);
+  const cutoffStr = cutoff.toISOString();
+
+  const stale = [];
+
+  for (const feed of data.feeds) {
+    const feedArticles = data.articles.filter(a => a.feedId === feed.id);
+
+    if (feedArticles.length === 0) {
+      // No articles fetched — only flag if the feed itself is old enough
+      const addedAt = feed.addedAt || null;
+      if (addedAt && addedAt < cutoffStr) {
+        stale.push({ feed, lastPublished: null });
+      }
+      continue;
+    }
+
+    // Most-recent publishedAt (fall back to fetchedAt if missing)
+    const latestDate = feedArticles.reduce((best, a) => {
+      const d = a.publishedAt || a.fetchedAt || '';
+      return d > best ? d : best;
+    }, '');
+
+    if (latestDate < cutoffStr) {
+      stale.push({ feed, lastPublished: latestDate || null });
+    }
+  }
+
+  return stale;
+}
+
+/**
+ * Deletes all feeds (and their articles) whose IDs are in `feedIds`.
+ * Returns the number of feeds removed.
+ */
+export async function pruneStaleFeeds(feedIds) {
+  if (!feedIds || feedIds.length === 0) return 0;
+  const idSet = new Set(feedIds);
+  const data = getData();
+  const newFeeds    = data.feeds.filter(f => !idSet.has(f.id));
+  const newArticles = data.articles.filter(a => !idSet.has(a.feedId));
+  await updateData({ feeds: newFeeds, articles: newArticles });
+  return feedIds.length;
+}
+
 // ============ NOTES ============
 
 export async function addNote(note) {

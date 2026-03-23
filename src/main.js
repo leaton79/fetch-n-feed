@@ -9,7 +9,7 @@ import { showKeyboardHelp, showFolderDialog, showEditNoteDialog, showAddNoteDial
 import { renderNotesView, downloadNotesAsText } from './views/notesView.js';
 import { extractArticle, renderArticlePaneContent, renderArticlePaneToolbar, openArticlePane, closeArticlePane, initArticlePaneCallbacks, saveReadingPosition, restoreReadingPosition, selectArticle } from './views/articlePane.js';
 import { renderArticles, renderListLayout, renderGridLayout, renderMagazineLayout, renderInlineLayout, attachArticleClickHandlers } from './views/articleList.js';
-import { renderFeedsList, handleAddFeed, handleRefreshAll } from './views/sidebar.js';
+import { renderFeedsList, handleAddFeed, handleRefreshAll, handlePruneStale } from './views/sidebar.js';
 
 
 // ── App initialisation ────────────────────────────────────────────────────────
@@ -197,12 +197,18 @@ function renderApp() {
           </select>
         </div>
         
-        <div style="display: flex; gap: 8px; margin-bottom: 20px;">
+        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
           <button id="btn-import-opml" style="flex: 1; padding: 8px; font-size: 12px; cursor: pointer; background: #e8e8e8; color: #333; border: none; border-radius: 6px;">
             📥 Import
           </button>
           <button id="btn-export-opml" style="flex: 1; padding: 8px; font-size: 12px; cursor: pointer; background: #e8e8e8; color: #333; border: none; border-radius: 6px;">
             📤 Export
+          </button>
+        </div>
+        <div style="margin-bottom: 20px;">
+          <button id="btn-prune-stale" style="width: 100%; padding: 8px; font-size: 12px; cursor: pointer; background: #e8e8e8; color: #555; border: none; border-radius: 6px;"
+            title="Remove feeds that haven't published in 18+ months">
+            🧹 Prune stale feeds
           </button>
         </div>
         
@@ -300,6 +306,7 @@ function renderApp() {
   
   document.getElementById('btn-add-feed').addEventListener('click', () => handleAddFeed(renderApp));
   document.getElementById('btn-refresh-all').addEventListener('click', () => handleRefreshAll(renderApp, renderArticles));
+  document.getElementById('btn-prune-stale').addEventListener('click', () => handlePruneStale(renderApp));
   
   document.getElementById('btn-export-opml').addEventListener('click', () => {
     const feeds = getAllFeeds();

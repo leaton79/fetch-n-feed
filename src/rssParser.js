@@ -90,44 +90,32 @@ function parseDate(dateStr) {
 }
 
 // Fetch and parse an RSS feed
-// CORS proxy chain — tried in order until one succeeds.
-// codetabs is first because corsproxy.io returns 403.
-// allorigins.win removed — confirmed timing out on every request.
-const PROXY_BUILDERS = [
-  u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
-  u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-  u => u, // direct fetch — last resort (works for feeds with CORS headers)
-];
+// Use Tauri's native Rust HTTP command — no CORS proxy needed.
+// window.__TAURI__.core.invoke calls the fetch_url command in lib.rs,
+// which uses reqwest directly and bypasses all browser CORS restrictions.
+// Falls back to the browser fetch + codetabs proxy if running outside Tauri.
 
-// 5 s per proxy attempt keeps worst-case at ~10 s/feed (codetabs timeout +
-// instant corsproxy 403 + instant direct fail) instead of the old 36 s.
-const PROXY_TIMEOUT_MS = 5000;
+async function nativeFetch(url) {
+  if (window.__TAURI__?.core?.invoke) {
+    // Native path: fast, no proxy, no CORS issues
+    return await window.__TAURI__.core.invoke('fetch_url', { url });
+  }
+  // Browser fallback (dev outside Tauri, or unit tests)
+  const proxyUrl = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`;
+  const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return await response.text();
+}
 
 export async function fetchFeed(url) {
-  let lastError = 'All proxies failed';
-
-  for (const buildProxy of PROXY_BUILDERS) {
-    try {
-      const proxyUrl = buildProxy(url);
-      const response = await fetch(proxyUrl, { signal: AbortSignal.timeout(PROXY_TIMEOUT_MS) });
-
-      if (!response.ok) {
-        lastError = `HTTP ${response.status}`;
-        continue; // try next proxy
-      }
-
-      const xmlText = await response.text();
-      const feed = parseXML(xmlText);
-
-      return { success: true, feed };
-    } catch (err) {
-      lastError = err.message || 'Fetch error';
-      // AbortError = timeout; TypeError = network; continue to next proxy
-    }
+  try {
+    const xmlText = await nativeFetch(url);
+    const feed = parseXML(xmlText);
+    return { success: true, feed };
+  } catch (err) {
+    console.error('fetchFeed failed for', url, '—', err.message || err);
+    return { success: false, error: err.message || String(err) };
   }
-
-  console.error('fetchFeed: all proxies failed for', url, '—', lastError);
-  return { success: false, error: lastError };
 }
 
 // Detect RSS feed URLs from a website URL (basic detection)

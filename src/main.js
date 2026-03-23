@@ -3,32 +3,9 @@
 import { loadData, getData, updateData, exportData } from './database.js';
 import { addFeed, getAllFeeds, getAllArticles, getArticlesByFeed, deleteFeed, markArticleRead, toggleArticleStar, toggleArticleArchive, deleteArticle, deleteMultipleArticles, refreshFeed, refreshAllFeeds, addFolder, deleteFolder, getAllFolders, updateFeed, addNote, updateNote, deleteNote, deleteMultipleNotes, getAllNotes, getNotesByTag, getAllNoteTags, addNoteTag, deleteNoteTag, generateAPACitation, exportNotesToText, cleanupOldArticles } from './feedManager.js';
 import { downloadOPML, parseOPML } from './opml.js';
-
-let savedArticleListScroll = 0;
-let currentFeedId = null;
-let currentSort = 'newest';
-let selectedArticle = null;
-let isLoadingArticle = false;
-let sidebarWidth = 260;
-let articleListWidth = 350;
-let articleFontSize = 16;
-let currentLayout = 'list';
-let currentFilter = 'all'; // all, unread, starred, archived
-let currentFolderId = null;
-let expandedFolders = new Set();
-let showNotesView = false;
-let notesSort = 'newest'; // newest, oldest, publication, tag
-let notesTagFilter = null;
-let selectedNotes = new Set();
-let editingNote = null;
-let searchQuery = '';
-let notesSearchQuery = '';
-let fetchAgeDays = 7;
-let feedSearchQuery = '';
-let selectedArticles = new Set();
-let articlesPage = 1;           // current pagination page for article list
-let lastArticlesContext = '';   // detects when feed/filter/search changes to reset page
-const ARTICLES_PER_PAGE = 75;  // articles shown per page
+import { state, ARTICLES_PER_PAGE } from './state.js';
+import { getFeedColor, stripHtml, truncate, applyHighlight, formatArticleContent, sortArticles } from './utils.js';
+import { showKeyboardHelp, showFolderDialog, showEditNoteDialog, showAddNoteDialog } from './views/dialogs.js';
 
 // Extract full article content from a URL
 async function extractArticle(url) {
@@ -137,24 +114,15 @@ async function extractArticle(url) {
   return { success: false, error: 'All proxies failed' };
 }
 
-function getFeedColor(feedId) {
-  const colors = ['#007aff', '#34c759', '#ff9500', '#ff3b30', '#af52de', '#5856d6', '#00c7be', '#ff2d55'];
-  let hash = 0;
-  for (let i = 0; i < feedId.length; i++) {
-    hash = feedId.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return colors[Math.abs(hash) % colors.length];
-}
-
 // ── Targeted article-pane update ────────────────────────────────────────────
 // Replaces the second full renderApp() call when an article finishes loading.
 // Only updates #article-content, leaving the article list (and its scroll
 // position) completely untouched.
 function renderArticlePaneContent() {
   const contentDiv = document.getElementById('article-content');
-  if (!contentDiv || !selectedArticle) return;
+  if (!contentDiv || !state.selectedArticle) return;
 
-  if (isLoadingArticle) {
+  if (state.isLoadingArticle) {
     contentDiv.innerHTML = `
       <div style="text-align: center; padding: 40px; color: #666;">
         <p style="font-size: 16px;">Loading full article...</p>
@@ -165,14 +133,14 @@ function renderArticlePaneContent() {
 
   contentDiv.innerHTML = `
     <h1 style="font-size: 28px; font-weight: 600; line-height: 1.3; margin: 0 0 16px 0; color: #1a1a1a;">
-      ${stripHtml(selectedArticle.title)}
+      ${stripHtml(state.selectedArticle.title)}
     </h1>
     <div style="font-size: 14px; color: #666; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #eee;">
-      ${selectedArticle.author ? `<span>${stripHtml(selectedArticle.author)}</span> · ` : ''}
-      ${selectedArticle.publishedAt ? new Date(selectedArticle.publishedAt).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : ''}
+      ${state.selectedArticle.author ? `<span>${stripHtml(state.selectedArticle.author)}</span> · ` : ''}
+      ${state.selectedArticle.publishedAt ? new Date(state.selectedArticle.publishedAt).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : ''}
     </div>
-    <div id="article-text" style="font-size: ${articleFontSize}px; line-height: 1.7; color: #333;">
-      ${formatArticleContent(selectedArticle.content || selectedArticle.summary || 'No content available.', selectedArticle.id)}
+    <div id="article-text" style="font-size: ${state.articleFontSize}px; line-height: 1.7; color: #333;">
+      ${formatArticleContent(state.selectedArticle.content || state.selectedArticle.summary || 'No content available.', state.selectedArticle.id)}
     </div>
   `;
   // Always scroll the reading pane to top when new content arrives
@@ -185,8 +153,8 @@ function renderArticlePaneContent() {
 async function saveReadingPosition() {
   const data = getData();
   const prefs = data.preferences;
-  const newFeedId = currentFeedId || null;
-  const newArticleId = selectedArticle?.id || null;
+  const newFeedId = state.currentFeedId || null;
+  const newArticleId = state.selectedArticle?.id || null;
   if (prefs.lastFeedId !== newFeedId || prefs.lastArticleId !== newArticleId) {
     await updateData({
       preferences: { ...prefs, lastFeedId: newFeedId, lastArticleId: newArticleId }
@@ -200,11 +168,11 @@ function restoreReadingPosition() {
   const { lastFeedId, lastArticleId } = data.preferences;
   if (lastFeedId) {
     const feed = getAllFeeds().find(f => f.id === lastFeedId);
-    if (feed) currentFeedId = lastFeedId;
+    if (feed) state.currentFeedId = lastFeedId;
   }
   if (lastArticleId) {
     const article = data.articles.find(a => a.id === lastArticleId);
-    if (article) selectedArticle = article;
+    if (article) state.selectedArticle = article;
   }
 }
 
@@ -252,21 +220,21 @@ function handleKeyboard(e) {
   
   const feeds = getAllFeeds();
   const allArticles = getData().articles;
-  let articles = currentFeedId 
-    ? allArticles.filter(a => a.feedId === currentFeedId)
+  let articles = state.currentFeedId 
+    ? allArticles.filter(a => a.feedId === state.currentFeedId)
     : allArticles;
   
   // Apply current filter
-  switch (currentFilter) {
+  switch (state.currentFilter) {
     case 'unread': articles = articles.filter(a => !a.isRead); break;
     case 'starred': articles = articles.filter(a => a.isStarred); break;
     case 'archived': articles = articles.filter(a => a.isArchived); break;
     default: articles = articles.filter(a => !a.isArchived);
   }
-  articles = sortArticles(articles, feeds);
+  articles = sortArticles(articles, feeds, state.currentSort);
   
-  const currentIndex = selectedArticle 
-    ? articles.findIndex(a => a.id === selectedArticle.id) 
+  const currentIndex = state.selectedArticle 
+    ? articles.findIndex(a => a.id === state.selectedArticle.id) 
     : -1;
   
   switch (e.key) {
@@ -310,36 +278,36 @@ function handleKeyboard(e) {
       
     case 'Enter':
     case 'o':
-      if (selectedArticle) {
+      if (state.selectedArticle) {
         e.preventDefault();
-        window.open(selectedArticle.url, '_blank');
+        window.open(state.selectedArticle.url, '_blank');
       }
       break;
       
     case 's':
-      if (selectedArticle) {
+      if (state.selectedArticle) {
         e.preventDefault();
-        toggleArticleStar(selectedArticle.id).then(() => {
-          selectedArticle = { ...selectedArticle, isStarred: !selectedArticle.isStarred };
+        toggleArticleStar(state.selectedArticle.id).then(() => {
+          state.selectedArticle = { ...state.selectedArticle, isStarred: !state.selectedArticle.isStarred };
           renderApp();
         });
       }
       break;
       
     case 'a':
-      if (selectedArticle) {
+      if (state.selectedArticle) {
         e.preventDefault();
-        toggleArticleArchive(selectedArticle.id).then(() => {
-          selectedArticle = { ...selectedArticle, isArchived: !selectedArticle.isArchived };
+        toggleArticleArchive(state.selectedArticle.id).then(() => {
+          state.selectedArticle = { ...state.selectedArticle, isArchived: !state.selectedArticle.isArchived };
           renderApp();
         });
       }
       break;
       
     case 'Escape':
-      if (selectedArticle) {
+      if (state.selectedArticle) {
         e.preventDefault();
-        selectedArticle = null;
+        state.selectedArticle = null;
         renderApp();
       }
       break;
@@ -362,11 +330,11 @@ function handleKeyboard(e) {
 async function selectArticle(article) {
   // Preserve the article list scroll position before the first renderApp() call
   const articleList = document.getElementById('articles-list');
-  savedArticleListScroll = articleList ? articleList.scrollTop : 0;
+  state.savedArticleListScroll = articleList ? articleList.scrollTop : 0;
 
   await markArticleRead(article.id);
-  selectedArticle = article;
-  isLoadingArticle = true;
+  state.selectedArticle = article;
+  state.isLoadingArticle = true;
   // First render: builds the 3-panel layout and shows the loading spinner
   renderApp();
 
@@ -378,229 +346,17 @@ async function selectArticle(article) {
   if (!article.content || isTruncated) {
     const result = await extractArticle(article.url);
     if (result.success && result.content) {
-      selectedArticle = { ...article, content: result.content };
+      state.selectedArticle = { ...article, content: result.content };
     }
   }
 
-  isLoadingArticle = false;
+  state.isLoadingArticle = false;
   // Targeted update: only swaps the article content div.
   // The article list DOM is never touched, so scroll position is preserved.
   renderArticlePaneContent();
 
   // Persist reading position for next launch
   saveReadingPosition();
-}
-
-function showKeyboardHelp() {
-  const helpHtml = `
-    <div id="keyboard-help" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
-      <div style="background: white; border-radius: 12px; padding: 24px 32px; max-width: 400px; box-shadow: 0 8px 32px rgba(0,0,0,0.2);">
-        <h2 style="margin: 0 0 16px 0; font-size: 20px;">Keyboard Shortcuts</h2>
-        <table style="width: 100%; font-size: 14px; border-collapse: collapse;">
-          <tr><td style="padding: 8px 16px 8px 0; color: #666;">↑ / ↓</td><td style="padding: 8px 0;">Scroll in article</td></tr>
-          <tr><td style="padding: 8px 16px 8px 0; color: #666;">Shift+↑ / k</td><td style="padding: 8px 0;">Previous article</td></tr>
-          <tr><td style="padding: 8px 16px 8px 0; color: #666;">Shift+↓ / j</td><td style="padding: 8px 0;">Next article</td></tr>
-          <tr><td style="padding: 8px 16px 8px 0; color: #666;">Enter / o</td><td style="padding: 8px 0;">Open in browser</td></tr>
-          <tr><td style="padding: 8px 16px 8px 0; color: #666;">s</td><td style="padding: 8px 0;">Star / unstar</td></tr>
-          <tr><td style="padding: 8px 16px 8px 0; color: #666;">a</td><td style="padding: 8px 0;">Archive / unarchive</td></tr>
-          <tr><td style="padding: 8px 16px 8px 0; color: #666;">r</td><td style="padding: 8px 0;">Refresh all feeds</td></tr>
-          <tr><td style="padding: 8px 16px 8px 0; color: #666;">Escape</td><td style="padding: 8px 0;">Close article</td></tr>
-          <tr><td style="padding: 8px 16px 8px 0; color: #666;">?</td><td style="padding: 8px 0;">Show this help</td></tr>
-        </table>
-        <button onclick="document.getElementById('keyboard-help').remove()" style="margin-top: 20px; padding: 10px 20px; font-size: 14px; cursor: pointer; background: #007aff; color: white; border: none; border-radius: 6px; width: 100%;">
-          Close
-        </button>
-      </div>
-    </div>
-  `;
-  document.body.insertAdjacentHTML('beforeend', helpHtml);
-  
-  // Close on click outside or Escape
-  document.getElementById('keyboard-help').addEventListener('click', (e) => {
-    if (e.target.id === 'keyboard-help') {
-      document.getElementById('keyboard-help').remove();
-    }
-  });
-}
-function showFolderDialog() {
-  const dialogHtml = `
-    <div id="folder-dialog" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
-      <div style="background: white; border-radius: 12px; padding: 24px; width: 300px; box-shadow: 0 8px 32px rgba(0,0,0,0.2);">
-        <h3 style="margin: 0 0 16px 0; font-size: 18px;">New Folder</h3>
-        <input type="text" id="folder-name-input" placeholder="Folder name..." 
-          style="width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid #d0d0d0; border-radius: 6px; box-sizing: border-box; margin-bottom: 16px; outline: none;">
-        <div style="display: flex; gap: 8px; justify-content: flex-end;">
-          <button id="folder-dialog-cancel" style="padding: 8px 16px; font-size: 14px; cursor: pointer; background: #e8e8e8; border: none; border-radius: 6px;">
-            Cancel
-          </button>
-          <button id="folder-dialog-create" style="padding: 8px 16px; font-size: 14px; cursor: pointer; background: #007aff; color: white; border: none; border-radius: 6px;">
-            Create
-          </button>
-        </div>
-      </div>
-    </div>
-  `;
-  
-  document.body.insertAdjacentHTML('beforeend', dialogHtml);
-  
-  const dialog = document.getElementById('folder-dialog');
-  const input = document.getElementById('folder-name-input');
-  const cancelBtn = document.getElementById('folder-dialog-cancel');
-  const createBtn = document.getElementById('folder-dialog-create');
-  
-  input.focus();
-  
-  const closeDialog = () => dialog.remove();
-  
-  const createFolder = async () => {
-    const name = input.value.trim();
-    if (name) {
-      await addFolder(name);
-      closeDialog();
-      renderApp();
-    }
-  };
-  
-  cancelBtn.addEventListener('click', closeDialog);
-  createBtn.addEventListener('click', createFolder);
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') createFolder();
-    if (e.key === 'Escape') closeDialog();
-  });
-  
-  dialog.addEventListener('click', (e) => {
-    if (e.target === dialog) closeDialog();
-  });
-}
-function stripHtml(html) {
-  if (!html) return '';
-  const tmp = document.createElement('div');
-  tmp.innerHTML = html;
-  return tmp.textContent || tmp.innerText || '';
-}
-
-function truncate(text, maxLength) {
-  const clean = stripHtml(text).trim();
-  if (clean.length <= maxLength) return clean;
-  return clean.substring(0, maxLength).trim() + '...';
-}
-function applyHighlight(html, highlightText) {
-  // First try exact match (works when no HTML tags break up the text)
-  const escaped = highlightText
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    .replace(/ /g, '\\s+');
-  
-  try {
-    const exactRegex = new RegExp(`(${escaped})`, 'gi');
-    if (exactRegex.test(html)) {
-      return html.replace(exactRegex, `<mark style="background: #fff59d; padding: 2px 0; border-radius: 2px;" title="Note saved">$1</mark>`);
-    }
-  } catch (e) { }
-  
-  // If exact match fails, build a regex that allows HTML tags between words
-  const words = highlightText
-    .replace(/\s+/g, ' ')
-    .trim()
-    .split(' ')
-    .filter(w => w.length > 0)
-    .map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  
-  if (words.length === 0) return html;
-  
-  // Allow HTML tags and whitespace between words
-  const flexiblePattern = words.join('(?:<[^>]*>|\\s)*');
-  
-  try {
-    const flexRegex = new RegExp(`(${flexiblePattern})`, 'gi');
-    return html.replace(flexRegex, `<mark style="background: #fff59d; padding: 2px 0; border-radius: 2px;" title="Note saved">$1</mark>`);
-  } catch (e) {
-    console.log('Flexible highlight failed:', e);
-  }
-  
-  return html;
-}
-function formatArticleContent(content, articleId = null) {
-  if (!content) return '<p>No content available.</p>';
-  
-  let formatted;
-  
-  if (content.includes('<p>') || content.includes('<div>') || content.includes('<img')) {
-    formatted = content.replace(/<img([^>]*)>/gi, (match, attrs) => {
-      const cleanAttrs = attrs
-        .replace(/width\s*=\s*["'][^"']*["']/gi, '')
-        .replace(/height\s*=\s*["'][^"']*["']/gi, '')
-        .replace(/style\s*=\s*["'][^"']*["']/gi, '');
-      return `<img${cleanAttrs} style="max-width: 100%; height: auto; border-radius: 8px; margin: 16px 0; display: block;">`;
-    });
-  } else {
-    formatted = content
-      .split('\n\n')
-      .map(para => {
-        para = para.trim();
-        if (!para) return '';
-        if (para.startsWith('## ')) {
-          return `<h2 style="font-size: 20px; font-weight: 600; margin: 24px 0 12px 0;">${para.substring(3)}</h2>`;
-        }
-        if (para.startsWith('> ')) {
-          return `<blockquote style="border-left: 3px solid #ddd; padding-left: 16px; margin: 16px 0; color: #555; font-style: italic;">${para.substring(2)}</blockquote>`;
-        }
-        if (para.startsWith('• ')) {
-          return `<ul style="margin: 8px 0; padding-left: 20px;"><li>${para.substring(2)}</li></ul>`;
-        }
-        return `<p style="margin: 0 0 16px 0;">${para}</p>`;
-      })
-      .join('');
-  }
-  
-// Apply saved highlights from notes
-  if (articleId) {
-    const allNotes = getAllNotes();
-    const notes = allNotes.filter(n => n.articleId === articleId && n.highlightedText);
-    
-    for (const note of notes) {
-      const highlightText = note.highlightedText;
-      if (highlightText && highlightText.length > 3) {
-        formatted = applyHighlight(formatted, highlightText);
-      }
-    }
-  }
-  
-  return formatted;
-}
-
-function sortArticles(articles, feeds) {
-  const sorted = [...articles];
-  
-  switch (currentSort) {
-    case 'newest':
-      return sorted.sort((a, b) => (b.publishedAt || b.fetchedAt).localeCompare(a.publishedAt || a.fetchedAt));
-    case 'oldest':
-      return sorted.sort((a, b) => (a.publishedAt || a.fetchedAt).localeCompare(b.publishedAt || b.fetchedAt));
-    case 'feedAZ':
-      return sorted.sort((a, b) => {
-        const feedA = feeds.find(f => f.id === a.feedId)?.title || '';
-        const feedB = feeds.find(f => f.id === b.feedId)?.title || '';
-        const cmp = feedA.localeCompare(feedB);
-        return cmp !== 0 ? cmp : (b.publishedAt || b.fetchedAt).localeCompare(a.publishedAt || a.fetchedAt);
-      });
-    case 'feedZA':
-      return sorted.sort((a, b) => {
-        const feedA = feeds.find(f => f.id === a.feedId)?.title || '';
-        const feedB = feeds.find(f => f.id === b.feedId)?.title || '';
-        const cmp = feedB.localeCompare(feedA);
-        return cmp !== 0 ? cmp : (b.publishedAt || b.fetchedAt).localeCompare(a.publishedAt || a.fetchedAt);
-      });
-    case 'random':
-      for (let i = sorted.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [sorted[i], sorted[j]] = [sorted[j], sorted[i]];
-      }
-      return sorted;
-    default:
-      return sorted;
-  }
 }
 
 function renderApp() {
@@ -610,7 +366,7 @@ function renderApp() {
   app.innerHTML = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; height: 100vh; background: #fafafa;">
       
-      <div id="sidebar" style="width: ${sidebarWidth}px; background: #ffffff; padding: 16px; border-right: none; overflow-y: auto; flex-shrink: 0;">
+      <div id="sidebar" style="width: ${state.sidebarWidth}px; background: #ffffff; padding: 16px; border-right: none; overflow-y: auto; flex-shrink: 0;">
         <h2 style="margin: 0 0 20px 0; font-size: 20px; font-weight: 600; color: #1a1a1a;">Fetch N Feed</h2>
         
         <div style="margin-bottom: 20px;">
@@ -626,11 +382,11 @@ function renderApp() {
             ↻ Refresh
           </button>
           <select id="fetch-age-select" style="padding: 8px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 6px; background: white; cursor: pointer;">
-            <option value="1" ${fetchAgeDays === 1 ? 'selected' : ''}>24 hours</option>
-            <option value="7" ${fetchAgeDays === 7 ? 'selected' : ''}>7 days</option>
-            <option value="14" ${fetchAgeDays === 14 ? 'selected' : ''}>2 weeks</option>
-            <option value="30" ${fetchAgeDays === 30 ? 'selected' : ''}>1 month</option>
-            <option value="90" ${fetchAgeDays === 90 ? 'selected' : ''}>3 months</option>
+            <option value="1" ${state.fetchAgeDays === 1 ? 'selected' : ''}>24 hours</option>
+            <option value="7" ${state.fetchAgeDays === 7 ? 'selected' : ''}>7 days</option>
+            <option value="14" ${state.fetchAgeDays === 14 ? 'selected' : ''}>2 weeks</option>
+            <option value="30" ${state.fetchAgeDays === 30 ? 'selected' : ''}>1 month</option>
+            <option value="90" ${state.fetchAgeDays === 90 ? 'selected' : ''}>3 months</option>
           </select>
         </div>
         
@@ -653,33 +409,33 @@ function renderApp() {
           const archivedCount = allArticles.filter(a => a.isArchived).length;
           return `
             <div style="margin-bottom: 4px;">
-              <a href="#" id="btn-all-articles" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${currentFilter === 'all' && currentFeedId === null ? '#007aff' : 'transparent'}; color: ${currentFilter === 'all' && currentFeedId === null ? 'white' : '#333'}; text-decoration: none; border-radius: 6px; font-weight: ${currentFilter === 'all' ? '500' : 'normal'};">
+              <a href="#" id="btn-all-articles" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.currentFilter === 'all' && state.currentFeedId === null ? '#007aff' : 'transparent'}; color: ${state.currentFilter === 'all' && state.currentFeedId === null ? 'white' : '#333'}; text-decoration: none; border-radius: 6px; font-weight: ${state.currentFilter === 'all' ? '500' : 'normal'};">
                 <span>📚 All Articles</span>
-                <span style="color: ${currentFilter === 'all' && currentFeedId === null ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${allCount}</span>
+                <span style="color: ${state.currentFilter === 'all' && state.currentFeedId === null ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${allCount}</span>
               </a>
             </div>
             <div style="margin-bottom: 4px;">
-              <a href="#" id="btn-unread" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${currentFilter === 'unread' ? '#007aff' : 'transparent'}; color: ${currentFilter === 'unread' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
+              <a href="#" id="btn-unread" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.currentFilter === 'unread' ? '#007aff' : 'transparent'}; color: ${state.currentFilter === 'unread' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
                 <span>📩 Unread</span>
-                <span style="color: ${currentFilter === 'unread' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${unreadCount}</span>
+                <span style="color: ${state.currentFilter === 'unread' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${unreadCount}</span>
               </a>
             </div>
             <div style="margin-bottom: 4px;">
-              <a href="#" id="btn-starred" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${currentFilter === 'starred' ? '#007aff' : 'transparent'}; color: ${currentFilter === 'starred' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
+              <a href="#" id="btn-starred" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.currentFilter === 'starred' ? '#007aff' : 'transparent'}; color: ${state.currentFilter === 'starred' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
                 <span>⭐ Starred</span>
-                <span style="color: ${currentFilter === 'starred' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${starredCount}</span>
+                <span style="color: ${state.currentFilter === 'starred' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${starredCount}</span>
               </a>
             </div>
             <div style="margin-bottom: 8px;">
-              <a href="#" id="btn-archived" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${currentFilter === 'archived' ? '#007aff' : 'transparent'}; color: ${currentFilter === 'archived' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
+              <a href="#" id="btn-archived" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.currentFilter === 'archived' ? '#007aff' : 'transparent'}; color: ${state.currentFilter === 'archived' ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
                 <span>📦 Archived</span>
-                <span style="color: ${currentFilter === 'archived' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${archivedCount}</span>
+                <span style="color: ${state.currentFilter === 'archived' ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${archivedCount}</span>
               </a>
             </div>
             <div style="margin-bottom: 4px;">
-              <a href="#" id="btn-notes" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${showNotesView ? '#007aff' : 'transparent'}; color: ${showNotesView ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
+              <a href="#" id="btn-notes" style="display: flex; justify-content: space-between; padding: 10px 12px; background: ${state.showNotesView ? '#007aff' : 'transparent'}; color: ${state.showNotesView ? 'white' : '#333'}; text-decoration: none; border-radius: 6px;">
                 <span>📝 Notes</span>
-                <span style="color: ${showNotesView ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${(getData().notes || []).length}</span>
+                <span style="color: ${state.showNotesView ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 12px;">${(getData().notes || []).length}</span>
               </a>
             </div>
           `;
@@ -692,7 +448,7 @@ function renderApp() {
         <div id="folders-list"></div>
         
         <div style="font-size: 11px; color: #888; margin: 16px 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;">Feeds</div>
-        <input type="text" id="feed-search-input" placeholder="Filter feeds..." value="${feedSearchQuery}"
+        <input type="text" id="feed-search-input" placeholder="Filter feeds..." value="${state.feedSearchQuery}"
           style="width: 100%; padding: 6px 10px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box; margin-bottom: 8px; outline: none;">
         <div id="feeds-list"></div>
       </div>
@@ -701,7 +457,7 @@ function renderApp() {
       
       <div style="flex: 1; display: flex; overflow: hidden;">
         
-        <div id="article-list-panel" style="width: ${selectedArticle && currentLayout !== 'inline' ? articleListWidth + 'px' : '100%'}; display: flex; flex-direction: column; overflow: hidden; background: #fafafa; flex-shrink: 0;">
+        <div id="article-list-panel" style="width: ${state.selectedArticle && state.currentLayout !== 'inline' ? state.articleListWidth + 'px' : '100%'}; display: flex; flex-direction: column; overflow: hidden; background: #fafafa; flex-shrink: 0;">
           
           <div style="padding: 12px 16px; background: #ffffff; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
             <div style="display: flex; align-items: center; gap: 12px;">
@@ -709,8 +465,8 @@ function renderApp() {
               <button id="btn-mark-all-read" style="padding: 4px 8px; font-size: 11px; cursor: pointer; background: #e8e8e8; color: #555; border: none; border-radius: 4px; white-space: nowrap;">
                 ✓ Mark All Read
               </button>
-              ${selectedArticles.size > 0 ? `
-              <span style="font-size: 11px; color: #666;">${selectedArticles.size} selected</span>
+              ${state.selectedArticles.size > 0 ? `
+              <span style="font-size: 11px; color: #666;">${state.selectedArticles.size} selected</span>
               <button id="btn-delete-selected" style="padding: 4px 8px; font-size: 11px; cursor: pointer; background: #ff3b30; color: white; border: none; border-radius: 4px; white-space: nowrap;">
                 🗑️ Delete Selected
               </button>
@@ -719,29 +475,29 @@ function renderApp() {
               </button>
               ` : ''}
               <div style="position: relative;">
-                <input type="text" id="search-input" placeholder="🔍 Search articles..." value="${searchQuery}" 
+                <input type="text" id="search-input" placeholder="🔍 Search articles..." value="${state.searchQuery}" 
                   style="padding: 6px 12px; padding-right: 28px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; width: 180px; outline: none;">
-                ${searchQuery ? `<button id="btn-clear-search" style="position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 14px; color: #999; padding: 0;">×</button>` : ''}
+                ${state.searchQuery ? `<button id="btn-clear-search" style="position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 14px; color: #999; padding: 0;">×</button>` : ''}
               </div>
             </div>
             <div style="display: flex; align-items: center; gap: 12px;">
               <div style="display: flex; align-items: center; gap: 4px;">
                 <label style="font-size: 12px; color: #666;">View:</label>
                 <select id="layout-select" style="padding: 4px 8px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; background: white; cursor: pointer;">
-                  <option value="list" ${currentLayout === 'list' ? 'selected' : ''}>📋 List</option>
-                  <option value="grid" ${currentLayout === 'grid' ? 'selected' : ''}>▦ Grid</option>
-                  <option value="magazine" ${currentLayout === 'magazine' ? 'selected' : ''}>📰 Magazine</option>
-                  <option value="inline" ${currentLayout === 'inline' ? 'selected' : ''}>📄 Inline</option>
+                  <option value="list" ${state.currentLayout === 'list' ? 'selected' : ''}>📋 List</option>
+                  <option value="grid" ${state.currentLayout === 'grid' ? 'selected' : ''}>▦ Grid</option>
+                  <option value="magazine" ${state.currentLayout === 'magazine' ? 'selected' : ''}>📰 Magazine</option>
+                  <option value="inline" ${state.currentLayout === 'inline' ? 'selected' : ''}>📄 Inline</option>
                 </select>
               </div>
               <div style="display: flex; align-items: center; gap: 4px;">
                 <label style="font-size: 12px; color: #666;">Sort:</label>
                 <select id="sort-select" style="padding: 4px 8px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; background: white; cursor: pointer;">
-                  <option value="newest" ${currentSort === 'newest' ? 'selected' : ''}>Newest</option>
-                  <option value="oldest" ${currentSort === 'oldest' ? 'selected' : ''}>Oldest</option>
-                  <option value="feedAZ" ${currentSort === 'feedAZ' ? 'selected' : ''}>Feed A→Z</option>
-                  <option value="feedZA" ${currentSort === 'feedZA' ? 'selected' : ''}>Feed Z→A</option>
-                  <option value="random" ${currentSort === 'random' ? 'selected' : ''}>Random</option>
+                  <option value="newest" ${state.currentSort === 'newest' ? 'selected' : ''}>Newest</option>
+                  <option value="oldest" ${state.currentSort === 'oldest' ? 'selected' : ''}>Oldest</option>
+                  <option value="feedAZ" ${state.currentSort === 'feedAZ' ? 'selected' : ''}>Feed A→Z</option>
+                  <option value="feedZA" ${state.currentSort === 'feedZA' ? 'selected' : ''}>Feed Z→A</option>
+                  <option value="random" ${state.currentSort === 'random' ? 'selected' : ''}>Random</option>
                 </select>
               </div>
             </div>
@@ -750,9 +506,9 @@ function renderApp() {
           <div id="articles-list" style="flex: 1; overflow-y: auto; padding: 12px;"></div>
         </div>
         
-        ${selectedArticle && currentLayout !== 'inline' ? `<div id="articlelist-resize" style="width: 5px; background: #e0e0e0; cursor: col-resize; flex-shrink: 0;" onmouseover="this.style.background='#007aff'" onmouseout="this.style.background='#e0e0e0'"></div>` : ''}
+        ${state.selectedArticle && state.currentLayout !== 'inline' ? `<div id="articlelist-resize" style="width: 5px; background: #e0e0e0; cursor: col-resize; flex-shrink: 0;" onmouseover="this.style.background='#007aff'" onmouseout="this.style.background='#e0e0e0'"></div>` : ''}
         
-        ${selectedArticle && currentLayout !== 'inline' ? `
+        ${state.selectedArticle && state.currentLayout !== 'inline' ? `
         <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #ffffff;">
           
           <div style="padding: 12px 20px; background: #f8f8f8; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
@@ -762,14 +518,14 @@ function renderApp() {
             <div style="display: flex; gap: 8px; align-items: center;">
               <div style="display: flex; align-items: center; gap: 4px; background: #e8e8e8; border-radius: 4px; padding: 2px;">
                 <button id="btn-font-decrease" style="padding: 4px 10px; font-size: 14px; cursor: pointer; background: transparent; border: none;">A-</button>
-                <span style="font-size: 12px; color: #666; min-width: 35px; text-align: center;">${articleFontSize}px</span>
+                <span style="font-size: 12px; color: #666; min-width: 35px; text-align: center;">${state.articleFontSize}px</span>
                 <button id="btn-font-increase" style="padding: 4px 10px; font-size: 14px; cursor: pointer; background: transparent; border: none;">A+</button>
               </div>
-              <button id="btn-star-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: ${selectedArticle.isStarred ? '#ff9500' : '#e8e8e8'}; color: ${selectedArticle.isStarred ? 'white' : '#333'}; border: none; border-radius: 4px;">
-                ${selectedArticle.isStarred ? '★ Starred' : '☆ Star'}
+              <button id="btn-star-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: ${state.selectedArticle.isStarred ? '#ff9500' : '#e8e8e8'}; color: ${state.selectedArticle.isStarred ? 'white' : '#333'}; border: none; border-radius: 4px;">
+                ${state.selectedArticle.isStarred ? '★ Starred' : '☆ Star'}
               </button>
-              <button id="btn-archive-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: ${selectedArticle.isArchived ? '#8e8e93' : '#e8e8e8'}; color: ${selectedArticle.isArchived ? 'white' : '#333'}; border: none; border-radius: 4px;">
-                ${selectedArticle.isArchived ? '📦 Archived' : '📥 Archive'}
+              <button id="btn-archive-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: ${state.selectedArticle.isArchived ? '#8e8e93' : '#e8e8e8'}; color: ${state.selectedArticle.isArchived ? 'white' : '#333'}; border: none; border-radius: 4px;">
+                ${state.selectedArticle.isArchived ? '📦 Archived' : '📥 Archive'}
               </button>
               <button id="btn-share-article" style="padding: 6px 12px; font-size: 13px; cursor: pointer; background: #34c759; color: white; border: none; border-radius: 4px;">
                 📋 Share
@@ -787,20 +543,20 @@ function renderApp() {
           </div>
           
           <div id="article-content" style="flex: 1; overflow-y: auto; padding: 24px 32px;">
-            ${isLoadingArticle ? `
+            ${state.isLoadingArticle ? `
               <div style="text-align: center; padding: 40px; color: #666;">
                 <p style="font-size: 16px;">Loading full article...</p>
               </div>
             ` : `
               <h1 style="font-size: 28px; font-weight: 600; line-height: 1.3; margin: 0 0 16px 0; color: #1a1a1a;">
-                ${stripHtml(selectedArticle.title)}
+                ${stripHtml(state.selectedArticle.title)}
               </h1>
               <div style="font-size: 14px; color: #666; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #eee;">
-                ${selectedArticle.author ? `<span>${stripHtml(selectedArticle.author)}</span> • ` : ''}
-                ${selectedArticle.publishedAt ? new Date(selectedArticle.publishedAt).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : ''}
+                ${state.selectedArticle.author ? `<span>${stripHtml(state.selectedArticle.author)}</span> • ` : ''}
+                ${state.selectedArticle.publishedAt ? new Date(state.selectedArticle.publishedAt).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : ''}
               </div>
-              <div id="article-text" style="font-size: ${articleFontSize}px; line-height: 1.7; color: #333;">
-                ${formatArticleContent(selectedArticle.content || selectedArticle.summary || 'No content available.', selectedArticle.id)}
+              <div id="article-text" style="font-size: ${state.articleFontSize}px; line-height: 1.7; color: #333;">
+                ${formatArticleContent(state.selectedArticle.content || state.selectedArticle.summary || 'No content available.', state.selectedArticle.id)}
               </div>
             `}
           </div>
@@ -874,76 +630,76 @@ function renderApp() {
     e.target.value = '';
   });
   document.getElementById('btn-add-folder').addEventListener('click', () => {
-    showFolderDialog();
+    showFolderDialog(renderApp);
   });
   document.getElementById('btn-all-articles').addEventListener('click', (e) => {
     e.preventDefault();
-    showNotesView = false;
-    currentFeedId = null;
-    currentFilter = 'all';
-    selectedArticle = null;
+    state.showNotesView = false;
+    state.currentFeedId = null;
+    state.currentFilter = 'all';
+    state.selectedArticle = null;
     renderApp();
   });
   
   document.getElementById('btn-unread').addEventListener('click', (e) => {
     e.preventDefault();
-    showNotesView = false;
-    currentFeedId = null;
-    currentFilter = 'unread';
-    selectedArticle = null;
+    state.showNotesView = false;
+    state.currentFeedId = null;
+    state.currentFilter = 'unread';
+    state.selectedArticle = null;
     renderApp();
   });
   
   document.getElementById('btn-starred').addEventListener('click', (e) => {
     e.preventDefault();
-    showNotesView = false;
-    currentFeedId = null;
-    currentFilter = 'starred';
-    selectedArticle = null;
+    state.showNotesView = false;
+    state.currentFeedId = null;
+    state.currentFilter = 'starred';
+    state.selectedArticle = null;
     renderApp();
   });
   
   document.getElementById('btn-archived').addEventListener('click', (e) => {
     e.preventDefault();
-    showNotesView = false;
-    currentFeedId = null;
-    currentFilter = 'archived';
-    selectedArticle = null;
+    state.showNotesView = false;
+    state.currentFeedId = null;
+    state.currentFilter = 'archived';
+    state.selectedArticle = null;
     renderApp();
   });
   document.getElementById('btn-notes').addEventListener('click', (e) => {
     e.preventDefault();
-    showNotesView = true;
-    currentFeedId = null;
-    currentFolderId = null;
-    selectedArticle = null;
+    state.showNotesView = true;
+    state.currentFeedId = null;
+    state.currentFolderId = null;
+    state.selectedArticle = null;
     renderApp();
   });
   document.getElementById('sort-select').addEventListener('change', (e) => {
-    currentSort = e.target.value;
+    state.currentSort = e.target.value;
     renderArticles();
   });
   document.getElementById('layout-select').addEventListener('change', (e) => {
-    currentLayout = e.target.value;
-    selectedArticle = null;
+    state.currentLayout = e.target.value;
+    state.selectedArticle = null;
     renderArticles();
   });
   document.getElementById('feed-search-input').addEventListener('input', (e) => {
-    feedSearchQuery = e.target.value;
+    state.feedSearchQuery = e.target.value;
     renderFeedsList();
   });
   document.getElementById('fetch-age-select').addEventListener('change', (e) => {
-    fetchAgeDays = parseInt(e.target.value) || 7;
+    state.fetchAgeDays = parseInt(e.target.value) || 7;
     renderArticles();
   });
   document.getElementById('search-input').addEventListener('input', (e) => {
-    searchQuery = e.target.value;
+    state.searchQuery = e.target.value;
     renderArticles();
   });
   
   document.getElementById('search-input').addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      searchQuery = '';
+      state.searchQuery = '';
       e.target.value = '';
       renderArticles();
     }
@@ -952,7 +708,7 @@ function renderApp() {
   const clearSearchBtn = document.getElementById('btn-clear-search');
   if (clearSearchBtn) {
     clearSearchBtn.addEventListener('click', () => {
-      searchQuery = '';
+      state.searchQuery = '';
       document.getElementById('search-input').value = '';
       renderArticles();
     });
@@ -963,10 +719,10 @@ function renderApp() {
     const allArticlesRaw = data.articles;
     let articlesToMark;
     
-    if (currentFeedId) {
-      articlesToMark = allArticlesRaw.filter(a => a.feedId === currentFeedId);
-    } else if (currentFolderId) {
-      const folderFeeds = feeds.filter(f => f.folderIds && f.folderIds.includes(currentFolderId));
+    if (state.currentFeedId) {
+      articlesToMark = allArticlesRaw.filter(a => a.feedId === state.currentFeedId);
+    } else if (state.currentFolderId) {
+      const folderFeeds = feeds.filter(f => f.folderIds && f.folderIds.includes(state.currentFolderId));
       const folderFeedIds = new Set(folderFeeds.map(f => f.id));
       articlesToMark = allArticlesRaw.filter(a => folderFeedIds.has(a.feedId));
     } else {
@@ -974,7 +730,7 @@ function renderApp() {
     }
     
     // Apply current filter
-    switch (currentFilter) {
+    switch (state.currentFilter) {
       case 'unread': articlesToMark = articlesToMark.filter(a => !a.isRead); break;
       case 'starred': articlesToMark = articlesToMark.filter(a => a.isStarred); break;
       case 'archived': articlesToMark = articlesToMark.filter(a => a.isArchived); break;
@@ -996,10 +752,10 @@ function renderApp() {
   const deleteSelectedBtn = document.getElementById('btn-delete-selected');
   if (deleteSelectedBtn) {
     deleteSelectedBtn.addEventListener('click', async () => {
-      if (selectedArticles.size === 0) return;
-      await deleteMultipleArticles(Array.from(selectedArticles));
-      selectedArticles.clear();
-      selectedArticle = null;
+      if (state.selectedArticles.size === 0) return;
+      await deleteMultipleArticles(Array.from(state.selectedArticles));
+      state.selectedArticles.clear();
+      state.selectedArticle = null;
       renderApp();
     });
   }
@@ -1007,22 +763,22 @@ function renderApp() {
   const clearSelectionBtn = document.getElementById('btn-clear-selection');
   if (clearSelectionBtn) {
     clearSelectionBtn.addEventListener('click', () => {
-      selectedArticles.clear();
+      state.selectedArticles.clear();
       renderArticles();
     });
   }
   const closeBtn = document.getElementById('btn-close-article');
-  if (closeBtn) closeBtn.addEventListener('click', () => { selectedArticle = null; renderApp(); });
+  if (closeBtn) closeBtn.addEventListener('click', () => { state.selectedArticle = null; renderApp(); });
   
   const openExternalBtn = document.getElementById('btn-open-external');
-  if (openExternalBtn) openExternalBtn.addEventListener('click', () => { if (selectedArticle) window.open(selectedArticle.url, '_blank'); });
+  if (openExternalBtn) openExternalBtn.addEventListener('click', () => { if (state.selectedArticle) window.open(state.selectedArticle.url, '_blank'); });
   
   const starBtn = document.getElementById('btn-star-article');
   if (starBtn) {
     starBtn.addEventListener('click', async () => {
-      if (selectedArticle) {
-        await toggleArticleStar(selectedArticle.id);
-        selectedArticle = { ...selectedArticle, isStarred: !selectedArticle.isStarred };
+      if (state.selectedArticle) {
+        await toggleArticleStar(state.selectedArticle.id);
+        state.selectedArticle = { ...state.selectedArticle, isStarred: !state.selectedArticle.isStarred };
         renderApp();
       }
     });
@@ -1031,9 +787,9 @@ function renderApp() {
   const archiveBtn = document.getElementById('btn-archive-article');
   if (archiveBtn) {
     archiveBtn.addEventListener('click', async () => {
-      if (selectedArticle) {
-        await toggleArticleArchive(selectedArticle.id);
-        selectedArticle = { ...selectedArticle, isArchived: !selectedArticle.isArchived };
+      if (state.selectedArticle) {
+        await toggleArticleArchive(state.selectedArticle.id);
+        state.selectedArticle = { ...state.selectedArticle, isArchived: !state.selectedArticle.isArchived };
         renderApp();
       }
     });
@@ -1042,19 +798,19 @@ function renderApp() {
   const addNoteBtn = document.getElementById('btn-add-note');
   if (addNoteBtn) {
     addNoteBtn.addEventListener('click', () => {
-      if (selectedArticle) {
+      if (state.selectedArticle) {
         const selection = window.getSelection();
         const highlightedText = selection.toString().trim();
-        showAddNoteDialog(selectedArticle, highlightedText);
+        showAddNoteDialog(state.selectedArticle, highlightedText, renderApp);
       }
     });
   }
   const deleteArticleBtn = document.getElementById('btn-delete-article');
   if (deleteArticleBtn) {
     deleteArticleBtn.addEventListener('click', async () => {
-      if (!selectedArticle) return;
-      await deleteArticle(selectedArticle.id);
-      selectedArticle = null;
+      if (!state.selectedArticle) return;
+      await deleteArticle(state.selectedArticle.id);
+      state.selectedArticle = null;
       renderApp();
     });
   }
@@ -1063,11 +819,11 @@ function renderApp() {
     sidebarResize.addEventListener('mousedown', (e) => {
       e.preventDefault();
       const startX = e.clientX;
-      const startWidth = sidebarWidth;
+      const startWidth = state.sidebarWidth;
       const onMouseMove = (e) => {
         const newWidth = startWidth + (e.clientX - startX);
         if (newWidth >= 150 && newWidth <= 500) {
-          sidebarWidth = newWidth;
+          state.sidebarWidth = newWidth;
           document.getElementById('sidebar').style.width = newWidth + 'px';
         }
       };
@@ -1083,11 +839,11 @@ function renderApp() {
   const fontDecreaseBtn = document.getElementById('btn-font-decrease');
   if (fontDecreaseBtn) {
     fontDecreaseBtn.addEventListener('click', () => {
-      if (articleFontSize > 12) {
-        articleFontSize -= 2;
+      if (state.articleFontSize > 12) {
+        state.articleFontSize -= 2;
         const textEl = document.getElementById('article-text');
-        if (textEl) textEl.style.fontSize = articleFontSize + 'px';
-        fontDecreaseBtn.nextElementSibling.textContent = articleFontSize + 'px';
+        if (textEl) textEl.style.fontSize = state.articleFontSize + 'px';
+        fontDecreaseBtn.nextElementSibling.textContent = state.articleFontSize + 'px';
       }
     });
   }
@@ -1095,11 +851,11 @@ function renderApp() {
   const fontIncreaseBtn = document.getElementById('btn-font-increase');
   if (fontIncreaseBtn) {
     fontIncreaseBtn.addEventListener('click', () => {
-      if (articleFontSize < 28) {
-        articleFontSize += 2;
+      if (state.articleFontSize < 28) {
+        state.articleFontSize += 2;
         const textEl = document.getElementById('article-text');
-        if (textEl) textEl.style.fontSize = articleFontSize + 'px';
-        fontIncreaseBtn.previousElementSibling.textContent = articleFontSize + 'px';
+        if (textEl) textEl.style.fontSize = state.articleFontSize + 'px';
+        fontIncreaseBtn.previousElementSibling.textContent = state.articleFontSize + 'px';
       }
     });
   }
@@ -1109,11 +865,11 @@ function renderApp() {
     articleListResize.addEventListener('mousedown', (e) => {
       e.preventDefault();
       const startX = e.clientX;
-      const startWidth = articleListWidth;
+      const startWidth = state.articleListWidth;
       const onMouseMove = (e) => {
         const newWidth = startWidth + (e.clientX - startX);
         if (newWidth >= 250 && newWidth <= 600) {
-          articleListWidth = newWidth;
+          state.articleListWidth = newWidth;
           document.getElementById('article-list-panel').style.width = newWidth + 'px';
         }
       };
@@ -1138,8 +894,8 @@ function renderApp() {
   
   container.innerHTML = folders.map(folder => {
     const folderFeeds = feeds.filter(f => f.folderIds && f.folderIds.includes(folder.id));
-    const isExpanded = expandedFolders.has(folder.id);
-    const isSelected = currentFolderId === folder.id;
+    const isExpanded = state.expandedFolders.has(folder.id);
+    const isSelected = state.currentFolderId === folder.id;
     
     // Count articles in folder
     const folderArticleCount = folderFeeds.reduce((sum, feed) => {
@@ -1168,8 +924,8 @@ function renderApp() {
         html += `
           <div style="display: flex; align-items: center; margin-bottom: 2px;">
             <a href="#" class="feed-link" data-feed-id="${feed.id}" 
-              style="flex: 1; padding: 6px 12px; background: ${currentFeedId === feed.id ? '#007aff' : 'transparent'}; color: ${currentFeedId === feed.id ? 'white' : '#555'}; text-decoration: none; border-radius: 4px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-              ${feed.title} <span style="color: ${currentFeedId === feed.id ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 11px;">(${articleCount})</span>
+              style="flex: 1; padding: 6px 12px; background: ${state.currentFeedId === feed.id ? '#007aff' : 'transparent'}; color: ${state.currentFeedId === feed.id ? 'white' : '#555'}; text-decoration: none; border-radius: 4px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              ${feed.title} <span style="color: ${state.currentFeedId === feed.id ? 'rgba(255,255,255,0.7)' : '#999'}; font-size: 11px;">(${articleCount})</span>
             </a>
             <button class="btn-remove-from-folder" data-feed-id="${feed.id}" data-folder-id="${folder.id}"
               style="background: none; border: none; color: #ccc; cursor: pointer; padding: 2px 6px; font-size: 12px;"
@@ -1195,18 +951,18 @@ function renderApp() {
       
       if (e.target.tagName === 'SPAN' && e.target.textContent.match(/[▼▶]/)) {
         // Toggle expand/collapse
-        if (expandedFolders.has(folderId)) {
-          expandedFolders.delete(folderId);
+        if (state.expandedFolders.has(folderId)) {
+          state.expandedFolders.delete(folderId);
         } else {
-          expandedFolders.add(folderId);
+          state.expandedFolders.add(folderId);
         }
         renderFoldersList();
       } else {
         // Select folder to view its articles
-        currentFolderId = currentFolderId === folderId ? null : folderId;
-        currentFeedId = null;
-        currentFilter = 'all';
-        selectedArticle = null;
+        state.currentFolderId = state.currentFolderId === folderId ? null : folderId;
+        state.currentFeedId = null;
+        state.currentFilter = 'all';
+        state.selectedArticle = null;
         renderApp();
       }
     });
@@ -1217,7 +973,7 @@ function renderApp() {
       e.stopPropagation();
       const folderId = btn.dataset.folderId;
       await deleteFolder(folderId);
-      if (currentFolderId === folderId) currentFolderId = null;
+      if (state.currentFolderId === folderId) state.currentFolderId = null;
       renderApp();
     });
   });
@@ -1240,10 +996,10 @@ function renderApp() {
   document.querySelectorAll('#folders-list .feed-link').forEach(link => {
     link.addEventListener('click', (e) => {
       e.preventDefault();
-      currentFeedId = link.dataset.feedId;
-      currentFolderId = null;
-      currentFilter = 'all';
-      selectedArticle = null;
+      state.currentFeedId = link.dataset.feedId;
+      state.currentFolderId = null;
+      state.currentFilter = 'all';
+      state.selectedArticle = null;
       renderApp();
     });
   });
@@ -1259,8 +1015,8 @@ function renderFeedsList() {
   const folders = getAllFolders();
   const allArticles = getData().articles;
   // Filter feeds by search query
-  if (feedSearchQuery && feedSearchQuery.trim()) {
-    const query = feedSearchQuery.toLowerCase().trim();
+  if (state.feedSearchQuery && state.feedSearchQuery.trim()) {
+    const query = state.feedSearchQuery.toLowerCase().trim();
     feeds = feeds.filter(f => f.title.toLowerCase().includes(query));
   }
   if (feeds.length === 0) {
@@ -1271,7 +1027,7 @@ function renderFeedsList() {
   container.innerHTML = feeds.map(feed => {
     const articleCount = allArticles.filter(a => a.feedId === feed.id && !a.isArchived).length;
     const unreadCount = allArticles.filter(a => a.feedId === feed.id && !a.isRead && !a.isArchived).length;
-    const isActive = currentFeedId === feed.id;
+    const isActive = state.currentFeedId === feed.id;
 
     // Badge: blue pill when there are unread items; subtle grey when all read
     const badge = unreadCount > 0
@@ -1308,10 +1064,10 @@ function renderFeedsList() {
   document.querySelectorAll('.feed-link').forEach(link => {
     link.addEventListener('click', (e) => {
       e.preventDefault();
-      currentFeedId = e.target.closest('.feed-link').dataset.feedId;
-      currentFolderId = null;
-      currentFilter = 'all';
-      selectedArticle = null;
+      state.currentFeedId = e.target.closest('.feed-link').dataset.feedId;
+      state.currentFolderId = null;
+      state.currentFilter = 'all';
+      state.selectedArticle = null;
       renderApp();
     });
   });
@@ -1323,7 +1079,7 @@ function renderFeedsList() {
       const feedId = this.getAttribute('data-feed-id');
       if (feedId) {
         await deleteFeed(feedId);
-        if (currentFeedId === feedId) currentFeedId = null;
+        if (state.currentFeedId === feedId) state.currentFeedId = null;
         renderApp();
       }
     });
@@ -1403,7 +1159,7 @@ function renderArticles() {
   const statusBar = document.getElementById('status-bar');
   
   // Show notes view if active
-  if (showNotesView) {
+  if (state.showNotesView) {
     renderNotesView();
     return;
   }
@@ -1414,10 +1170,10 @@ function renderArticles() {
   const allArticlesRaw = getData().articles;
   let articles;
   
-  if (currentFeedId) {
-    articles = allArticlesRaw.filter(a => a.feedId === currentFeedId);
-  } else if (currentFolderId) {
-    const folderFeeds = feeds.filter(f => f.folderIds && f.folderIds.includes(currentFolderId));
+  if (state.currentFeedId) {
+    articles = allArticlesRaw.filter(a => a.feedId === state.currentFeedId);
+  } else if (state.currentFolderId) {
+    const folderFeeds = feeds.filter(f => f.folderIds && f.folderIds.includes(state.currentFolderId));
     const folderFeedIds = new Set(folderFeeds.map(f => f.id));
     articles = allArticlesRaw.filter(a => folderFeedIds.has(a.feedId));
   } else {
@@ -1425,7 +1181,7 @@ function renderArticles() {
   }
   
   // Apply filter
-  switch (currentFilter) {
+  switch (state.currentFilter) {
     case 'unread':
       articles = articles.filter(a => !a.isRead);
       break;
@@ -1450,8 +1206,8 @@ function renderArticles() {
   }
   
   // Apply search filter
-  if (searchQuery && searchQuery.trim()) {
-    const query = searchQuery.toLowerCase().trim();
+  if (state.searchQuery && state.searchQuery.trim()) {
+    const query = state.searchQuery.toLowerCase().trim();
     articles = articles.filter(a => {
       const title = (a.title || '').toLowerCase();
       const summary = (a.summary || '').toLowerCase();
@@ -1468,9 +1224,9 @@ function renderArticles() {
     });
   }
   
-  articles = sortArticles(articles, feeds);
+  articles = sortArticles(articles, feeds, state.currentSort);
   
-  const currentFeed = currentFeedId ? feeds.find(f => f.id === currentFeedId) : null;
+  const currentFeed = state.currentFeedId ? feeds.find(f => f.id === state.currentFeedId) : null;
   statusBar.textContent = currentFeed ? `${currentFeed.title} — ${articles.length} articles` : `All Articles — ${articles.length} articles`;
   
   if (articles.length === 0) {
@@ -1485,18 +1241,18 @@ function renderArticles() {
   }
   
   // Reset to page 1 whenever the feed/filter/search context changes
-  const newContext = `${currentFeedId}|${currentFolderId}|${currentFilter}|${searchQuery}`;
-  if (newContext !== lastArticlesContext) {
-    articlesPage = 1;
-    lastArticlesContext = newContext;
+  const newContext = `${state.currentFeedId}|${state.currentFolderId}|${state.currentFilter}|${state.searchQuery}`;
+  if (newContext !== state.lastArticlesContext) {
+    state.articlesPage = 1;
+    state.lastArticlesContext = newContext;
   }
 
   // Paginate: show ARTICLES_PER_PAGE at a time
-  const pagedArticles = articles.slice(0, articlesPage * ARTICLES_PER_PAGE);
+  const pagedArticles = articles.slice(0, state.articlesPage * ARTICLES_PER_PAGE);
   const hasMore = articles.length > pagedArticles.length;
   const remaining = articles.length - pagedArticles.length;
 
-  switch (currentLayout) {
+  switch (state.currentLayout) {
     case 'grid': renderGridLayout(container, pagedArticles, feeds); break;
     case 'magazine': renderMagazineLayout(container, pagedArticles, feeds); break;
     case 'inline': renderInlineLayout(container, pagedArticles, feeds); break;
@@ -1517,24 +1273,24 @@ function renderArticles() {
     `;
     container.appendChild(loadMoreDiv);
     document.getElementById('btn-load-more').addEventListener('click', () => {
-      articlesPage++;
+      state.articlesPage++;
       // Save scroll position so "Load more" doesn't jump
       const list = document.getElementById('articles-list');
-      savedArticleListScroll = list ? list.scrollTop : 0;
+      state.savedArticleListScroll = list ? list.scrollTop : 0;
       renderArticles();
     });
   }
 
   // Restore scroll position if saved (e.g. after article selection)
-  if (savedArticleListScroll > 0) {
+  if (state.savedArticleListScroll > 0) {
     const articlesList = document.getElementById('articles-list');
-    if (articlesList) articlesList.scrollTop = savedArticleListScroll;
+    if (articlesList) articlesList.scrollTop = state.savedArticleListScroll;
   }
 }
 
 function renderListLayout(container, articles, feeds) {
   let lastFeedId = null;
-  const showFeedHeaders = (currentSort === 'feedAZ' || currentSort === 'feedZA') && !currentFeedId;
+  const showFeedHeaders = (state.currentSort === 'feedAZ' || state.currentSort === 'feedZA') && !state.currentFeedId;
   let html = '';
   
   articles.forEach((article, index) => {
@@ -1550,7 +1306,7 @@ function renderListLayout(container, articles, feeds) {
     
     html += `
       <div class="article-card" data-article-id="${article.id}" 
-        style="background: ${selectedArticles.has(article.id) ? '#fff3cd' : (isEven ? '#ffffff' : '#dceaff')}; border-left: 4px solid ${feed ? getFeedColor(feed.id) : '#ccc'}; border-radius: 8px; padding: 16px 20px; margin-bottom: 8px; border: 2px solid ${selectedArticles.has(article.id) ? '#ff9500' : '#e8e8e8'}; cursor: pointer; ${article.isRead ? 'opacity: 0.65;' : ''}"
+        style="background: ${state.selectedArticles.has(article.id) ? '#fff3cd' : (isEven ? '#ffffff' : '#dceaff')}; border-left: 4px solid ${feed ? getFeedColor(feed.id) : '#ccc'}; border-radius: 8px; padding: 16px 20px; margin-bottom: 8px; border: 2px solid ${state.selectedArticles.has(article.id) ? '#ff9500' : '#e8e8e8'}; cursor: pointer; ${article.isRead ? 'opacity: 0.65;' : ''}"
         onmouseover="this.style.boxShadow='0 2px 8px rgba(0,0,0,0.06)'" onmouseout="this.style.boxShadow='none'">
         <div style="font-size: 16px; font-weight: ${article.isRead ? '500' : '600'}; color: #1a1a1a; margin-bottom: 6px; line-height: 1.4;">${stripHtml(article.title)}</div>
         <div style="font-size: 12px; color: #888; margin-bottom: 8px;">${!showFeedHeaders && feed ? `<span style="color: #007aff;">${feed.title}</span> • ` : ''}${article.author ? stripHtml(article.author) + ' • ' : ''}${publishedDate}</div>
@@ -1640,7 +1396,7 @@ function renderInlineLayout(container, articles, feeds) {
   articles.forEach((article) => {
     const feed = feeds.find(f => f.id === article.feedId);
     const publishedDate = article.publishedAt ? new Date(article.publishedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-    const isExpanded = selectedArticle && selectedArticle.id === article.id;
+    const isExpanded = state.selectedArticle && state.selectedArticle.id === article.id;
     
     html += `
       <div class="article-card" data-article-id="${article.id}" 
@@ -1657,7 +1413,7 @@ function renderInlineLayout(container, articles, feeds) {
         </div>
         ${isExpanded ? `
           <div style="padding: 0 20px 20px 24px; border-top: 1px solid #eee;">
-            <div style="font-size: ${articleFontSize}px; line-height: 1.7; color: #333; padding-top: 16px;">${formatArticleContent(selectedArticle.content || selectedArticle.summary || 'No content available.', selectedArticle.id)}</div>
+            <div style="font-size: ${state.articleFontSize}px; line-height: 1.7; color: #333; padding-top: 16px;">${formatArticleContent(state.selectedArticle.content || state.selectedArticle.summary || 'No content available.', state.selectedArticle.id)}</div>
             <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid #eee; display: flex; gap: 12px;">
               <button class="btn-inline-share" data-url="${article.url}" data-title="${stripHtml(article.title).replace(/"/g, '&quot;')}" style="padding: 8px 16px; font-size: 13px; cursor: pointer; background: #34c759; color: white; border: none; border-radius: 6px;">📋 Share</button>
               <button class="btn-inline-open" data-url="${article.url}" style="padding: 8px 16px; font-size: 13px; cursor: pointer; background: #007aff; color: white; border: none; border-radius: 6px;">Open in Browser ↗</button>
@@ -1678,15 +1434,15 @@ function renderInlineLayout(container, articles, feeds) {
         const article = articles.find(a => a.id === articleId);
         if (article) {
           await markArticleRead(articleId);
-          if (selectedArticle && selectedArticle.id === articleId) {
-            selectedArticle = null;
+          if (state.selectedArticle && state.selectedArticle.id === articleId) {
+            state.selectedArticle = null;
           } else {
-            selectedArticle = article;
+            state.selectedArticle = article;
             const textContent = stripHtml(article.content || '');
             const isTruncated = textContent.includes('Read the full story') || textContent.includes('Continue reading') || textContent.includes('Read more') || textContent.length < 500;
             if (!article.content || isTruncated) {
               const result = await extractArticle(article.url);
-              if (result.success && result.content) selectedArticle = { ...article, content: result.content };
+              if (result.success && result.content) state.selectedArticle = { ...article, content: result.content };
             }
           }
           renderArticles();
@@ -1718,13 +1474,13 @@ function renderNotesView() {
   const noteTags = getAllNoteTags();
   
   // Apply tag filter
-  if (notesTagFilter) {
-    notes = notes.filter(n => n.tags.includes(notesTagFilter));
+  if (state.notesTagFilter) {
+    notes = notes.filter(n => n.tags.includes(state.notesTagFilter));
   }
   
   // Apply search filter
-  if (notesSearchQuery && notesSearchQuery.trim()) {
-    const query = notesSearchQuery.toLowerCase().trim();
+  if (state.notesSearchQuery && state.notesSearchQuery.trim()) {
+    const query = state.notesSearchQuery.toLowerCase().trim();
     notes = notes.filter(n => {
       const highlight = (n.highlightedText || '').toLowerCase();
       const annotation = (n.annotation || '').toLowerCase();
@@ -1741,7 +1497,7 @@ function renderNotesView() {
   }
   
   // Sort notes
-  switch (notesSort) {
+  switch (state.notesSort) {
     case 'oldest':
       notes.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       break;
@@ -1755,7 +1511,7 @@ function renderNotesView() {
       notes.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
   
-  statusBar.textContent = `Notes — ${notes.length} ${notes.length === 1 ? 'note' : 'notes'}${notesTagFilter ? ` (filtered by: ${notesTagFilter})` : ''}`;
+  statusBar.textContent = `Notes — ${notes.length} ${notes.length === 1 ? 'note' : 'notes'}${state.notesTagFilter ? ` (filtered by: ${state.notesTagFilter})` : ''}`;
   
   if (notes.length === 0) {
     container.innerHTML = `
@@ -1773,42 +1529,42 @@ function renderNotesView() {
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding: 12px; background: white; border-radius: 8px; border: 1px solid #e8e8e8;">
       <div style="display: flex; align-items: center; gap: 12px;">
         <div style="position: relative;">
-          <input type="text" id="notes-search-input" placeholder="🔍 Search notes..." value="${notesSearchQuery}" 
+          <input type="text" id="notes-search-input" placeholder="🔍 Search notes..." value="${state.notesSearchQuery}" 
             style="padding: 6px 12px; padding-right: 28px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; width: 150px; outline: none;">
-          ${notesSearchQuery ? `<button id="btn-clear-notes-search" style="position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 14px; color: #999; padding: 0;">×</button>` : ''}
+          ${state.notesSearchQuery ? `<button id="btn-clear-notes-search" style="position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 14px; color: #999; padding: 0;">×</button>` : ''}
         </div>
         <label style="font-size: 12px; color: #666;">Sort:</label>
         <select id="notes-sort-select" style="padding: 4px 8px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; background: white;">
-          <option value="newest" ${notesSort === 'newest' ? 'selected' : ''}>Newest</option>
-          <option value="oldest" ${notesSort === 'oldest' ? 'selected' : ''}>Oldest</option>
-          <option value="publication" ${notesSort === 'publication' ? 'selected' : ''}>Publication</option>
-          <option value="tag" ${notesSort === 'tag' ? 'selected' : ''}>Tag</option>
+          <option value="newest" ${state.notesSort === 'newest' ? 'selected' : ''}>Newest</option>
+          <option value="oldest" ${state.notesSort === 'oldest' ? 'selected' : ''}>Oldest</option>
+          <option value="publication" ${state.notesSort === 'publication' ? 'selected' : ''}>Publication</option>
+          <option value="tag" ${state.notesSort === 'tag' ? 'selected' : ''}>Tag</option>
         </select>
         
         <label style="font-size: 12px; color: #666; margin-left: 8px;">Filter:</label>
         <select id="notes-tag-filter" style="padding: 4px 8px; font-size: 12px; border: 1px solid #d0d0d0; border-radius: 4px; background: white;">
           <option value="">All Tags</option>
-          ${noteTags.map(t => `<option value="${t.name}" ${notesTagFilter === t.name ? 'selected' : ''}>${t.name}</option>`).join('')}
+          ${noteTags.map(t => `<option value="${t.name}" ${state.notesTagFilter === t.name ? 'selected' : ''}>${t.name}</option>`).join('')}
         </select>
       </div>
       
       <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="font-size: 12px; color: #666;">${selectedNotes.size} selected</span>
-        <button id="btn-export-selected" style="padding: 6px 12px; font-size: 12px; cursor: pointer; background: ${selectedNotes.size > 0 ? '#007aff' : '#e8e8e8'}; color: ${selectedNotes.size > 0 ? 'white' : '#999'}; border: none; border-radius: 4px;" ${selectedNotes.size === 0 ? 'disabled' : ''}>
+        <span style="font-size: 12px; color: #666;">${state.selectedNotes.size} selected</span>
+        <button id="btn-export-selected" style="padding: 6px 12px; font-size: 12px; cursor: pointer; background: ${state.selectedNotes.size > 0 ? '#007aff' : '#e8e8e8'}; color: ${state.selectedNotes.size > 0 ? 'white' : '#999'}; border: none; border-radius: 4px;" ${state.selectedNotes.size === 0 ? 'disabled' : ''}>
           Export Selected
         </button>
-        <button id="btn-delete-selected" style="padding: 6px 12px; font-size: 12px; cursor: pointer; background: ${selectedNotes.size > 0 ? '#ff3b30' : '#e8e8e8'}; color: ${selectedNotes.size > 0 ? 'white' : '#999'}; border: none; border-radius: 4px;" ${selectedNotes.size === 0 ? 'disabled' : ''}>
+        <button id="btn-delete-selected" style="padding: 6px 12px; font-size: 12px; cursor: pointer; background: ${state.selectedNotes.size > 0 ? '#ff3b30' : '#e8e8e8'}; color: ${state.selectedNotes.size > 0 ? 'white' : '#999'}; border: none; border-radius: 4px;" ${state.selectedNotes.size === 0 ? 'disabled' : ''}>
           Delete Selected
         </button>
         <button id="btn-select-all-notes" style="padding: 6px 12px; font-size: 12px; cursor: pointer; background: #e8e8e8; color: #333; border: none; border-radius: 4px;">
-          ${selectedNotes.size === notes.length ? 'Deselect All' : 'Select All'}
+          ${state.selectedNotes.size === notes.length ? 'Deselect All' : 'Select All'}
         </button>
       </div>
     </div>
   `;
   
   notes.forEach(note => {
-    const isSelected = selectedNotes.has(note.id);
+    const isSelected = state.selectedNotes.has(note.id);
     const citation = generateAPACitation(note);
     const createdDate = new Date(note.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     
@@ -1864,7 +1620,7 @@ function renderNotesView() {
   // Event listeners
   const notesSearchInput = document.getElementById('notes-search-input');
   notesSearchInput.addEventListener('input', (e) => {
-    notesSearchQuery = e.target.value;
+    state.notesSearchQuery = e.target.value;
     const cursorPos = e.target.selectionStart;
     renderNotesView();
     // Restore focus and cursor position
@@ -1875,7 +1631,7 @@ function renderNotesView() {
   
   document.getElementById('notes-search-input').addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      notesSearchQuery = '';
+      state.notesSearchQuery = '';
       e.target.value = '';
       renderNotesView();
     }
@@ -1884,41 +1640,41 @@ function renderNotesView() {
   const clearNotesSearchBtn = document.getElementById('btn-clear-notes-search');
   if (clearNotesSearchBtn) {
     clearNotesSearchBtn.addEventListener('click', () => {
-      notesSearchQuery = '';
+      state.notesSearchQuery = '';
       renderNotesView();
     });
   }
   
   document.getElementById('notes-sort-select').addEventListener('change', (e) => {
-    notesSort = e.target.value;
+    state.notesSort = e.target.value;
     renderNotesView();
   });
   
   document.getElementById('notes-tag-filter').addEventListener('change', (e) => {
-    notesTagFilter = e.target.value || null;
-    selectedNotes.clear();
+    state.notesTagFilter = e.target.value || null;
+    state.selectedNotes.clear();
     renderNotesView();
   });
   
   document.getElementById('btn-select-all-notes').addEventListener('click', () => {
-    if (selectedNotes.size === notes.length) {
-      selectedNotes.clear();
+    if (state.selectedNotes.size === notes.length) {
+      state.selectedNotes.clear();
     } else {
-      notes.forEach(n => selectedNotes.add(n.id));
+      notes.forEach(n => state.selectedNotes.add(n.id));
     }
     renderNotesView();
   });
   
   document.getElementById('btn-export-selected').addEventListener('click', () => {
-    if (selectedNotes.size === 0) return;
-    const notesToExport = notes.filter(n => selectedNotes.has(n.id));
+    if (state.selectedNotes.size === 0) return;
+    const notesToExport = notes.filter(n => state.selectedNotes.has(n.id));
     downloadNotesAsText(notesToExport);
   });
   
   document.getElementById('btn-delete-selected').addEventListener('click', async () => {
-    if (selectedNotes.size === 0) return;
-    await deleteMultipleNotes(Array.from(selectedNotes));
-    selectedNotes.clear();
+    if (state.selectedNotes.size === 0) return;
+    await deleteMultipleNotes(Array.from(state.selectedNotes));
+    state.selectedNotes.clear();
     renderApp();
   });
   
@@ -1926,9 +1682,9 @@ function renderNotesView() {
     checkbox.addEventListener('change', (e) => {
       const noteId = e.target.dataset.noteId;
       if (e.target.checked) {
-        selectedNotes.add(noteId);
+        state.selectedNotes.add(noteId);
       } else {
-        selectedNotes.delete(noteId);
+        state.selectedNotes.delete(noteId);
       }
       renderNotesView();
     });
@@ -1938,7 +1694,7 @@ function renderNotesView() {
     btn.addEventListener('click', () => {
       const noteId = btn.dataset.noteId;
       const note = notes.find(n => n.id === noteId);
-      if (note) showEditNoteDialog(note);
+      if (note) showEditNoteDialog(note, renderApp);
     });
   });
   
@@ -1954,10 +1710,10 @@ function renderNotesView() {
       const articleId = btn.dataset.articleId;
       const article = getData().articles.find(a => a.id === articleId);
       if (article) {
-        showNotesView = false;
-        currentFeedId = null;
-        currentFolderId = null;
-        selectedArticle = article;
+        state.showNotesView = false;
+        state.currentFeedId = null;
+        state.currentFolderId = null;
+        state.selectedArticle = article;
         await markArticleRead(article.id);
         renderApp();
       } else {
@@ -2052,236 +1808,7 @@ function downloadNotesAsText(notes) {
     if (e.target === dialog) closeDialog();
   });
 }
-function showEditNoteDialog(note) {
-  const noteTags = getAllNoteTags();
-  
-  const dialogHtml = `
-    <div id="edit-note-dialog" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
-      <div style="background: white; border-radius: 12px; padding: 24px; width: 500px; max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.2);">
-        <h3 style="margin: 0 0 20px 0; font-size: 18px;">Edit Note</h3>
-        
-        <div style="margin-bottom: 16px;">
-          <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Highlighted Text</label>
-          <textarea id="edit-highlight" style="width: 100%; padding: 10px; font-size: 14px; border: 1px solid #d0d0d0; border-radius: 6px; box-sizing: border-box; min-height: 80px; resize: vertical;">${note.highlightedText || ''}</textarea>
-        </div>
-        
-        <div style="margin-bottom: 16px;">
-          <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Annotation</label>
-          <textarea id="edit-annotation" style="width: 100%; padding: 10px; font-size: 14px; border: 1px solid #d0d0d0; border-radius: 6px; box-sizing: border-box; min-height: 80px; resize: vertical;">${note.annotation || ''}</textarea>
-        </div>
-        
-        <div style="margin-bottom: 16px;">
-          <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Tags (comma-separated)</label>
-          <input type="text" id="edit-tags" value="${note.tags.join(', ')}" style="width: 100%; padding: 10px; font-size: 14px; border: 1px solid #d0d0d0; border-radius: 6px; box-sizing: border-box;">
-          ${noteTags.length > 0 ? `<div style="margin-top: 6px; font-size: 11px; color: #888;">Existing tags: ${noteTags.map(t => t.name).join(', ')}</div>` : ''}
-        </div>
-        
-        <div style="background: #f5f5f5; padding: 12px; border-radius: 6px; margin-bottom: 16px;">
-          <div style="font-size: 12px; font-weight: 600; color: #666; margin-bottom: 12px;">Citation Information (APA)</div>
-          
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Author</label>
-            <input type="text" id="edit-citation-author" value="${note.citationAuthor || ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
-          </div>
-          
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Year</label>
-            <input type="text" id="edit-citation-date" value="${note.citationDate || ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
-          </div>
-          
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Title</label>
-            <input type="text" id="edit-citation-title" value="${note.citationTitle || ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
-          </div>
-          
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Source/Publication</label>
-            <input type="text" id="edit-citation-source" value="${note.citationSource || ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
-          </div>
-          
-          <div>
-            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">URL</label>
-            <input type="text" id="edit-citation-url" value="${note.citationUrl || ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
-          </div>
-        </div>
-        
-        <div style="display: flex; gap: 8px; justify-content: flex-end;">
-          <button id="edit-note-cancel" style="padding: 10px 20px; font-size: 14px; cursor: pointer; background: #e8e8e8; border: none; border-radius: 6px;">
-            Cancel
-          </button>
-          <button id="edit-note-save" style="padding: 10px 20px; font-size: 14px; cursor: pointer; background: #007aff; color: white; border: none; border-radius: 6px;">
-            Save Changes
-          </button>
-        </div>
-      </div>
-    </div>
-  `;
-  
-  document.body.insertAdjacentHTML('beforeend', dialogHtml);
-  
-  const dialog = document.getElementById('edit-note-dialog');
-  const cancelBtn = document.getElementById('edit-note-cancel');
-  const saveBtn = document.getElementById('edit-note-save');
-  
-  const closeDialog = () => dialog.remove();
-  
-  cancelBtn.addEventListener('click', closeDialog);
-  
-  saveBtn.addEventListener('click', async () => {
-    const tagsInput = document.getElementById('edit-tags').value;
-    const tags = tagsInput.split(',').map(t => t.trim()).filter(t => t);
-    
-    // Create any new tags
-    for (const tagName of tags) {
-      const existing = getAllNoteTags().find(t => t.name.toLowerCase() === tagName.toLowerCase());
-      if (!existing) {
-        await addNoteTag(tagName);
-      }
-    }
-    
-    await updateNote(note.id, {
-      highlightedText: document.getElementById('edit-highlight').value,
-      annotation: document.getElementById('edit-annotation').value,
-      tags: tags,
-      citationAuthor: document.getElementById('edit-citation-author').value,
-      citationDate: document.getElementById('edit-citation-date').value,
-      citationTitle: document.getElementById('edit-citation-title').value,
-      citationSource: document.getElementById('edit-citation-source').value,
-      citationUrl: document.getElementById('edit-citation-url').value,
-    });
-    
-    closeDialog();
-    renderApp();
-  });
-  
-  dialog.addEventListener('click', (e) => {
-    if (e.target === dialog) closeDialog();
-  });
-}
-function showAddNoteDialog(article, highlightedText = '') {
-  const feed = getAllFeeds().find(f => f.id === article.feedId);
-  const noteTags = getAllNoteTags();
-  
-  const dialogHtml = `
-    <div id="add-note-dialog" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
-      <div style="background: white; border-radius: 12px; padding: 24px; width: 500px; max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.2);">
-        <h3 style="margin: 0 0 8px 0; font-size: 18px;">Add Note</h3>
-        <p style="margin: 0 0 20px 0; font-size: 13px; color: #666;">${stripHtml(article.title)}</p>
-        
-        <div style="margin-bottom: 16px;">
-          <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Highlighted Text (select text in article first, or paste here)</label>
-          <textarea id="new-highlight" style="width: 100%; padding: 10px; font-size: 14px; border: 1px solid #d0d0d0; border-radius: 6px; box-sizing: border-box; min-height: 80px; resize: vertical;">${highlightedText}</textarea>
-        </div>
-        
-        <div style="margin-bottom: 16px;">
-          <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Annotation (your notes)</label>
-          <textarea id="new-annotation" style="width: 100%; padding: 10px; font-size: 14px; border: 1px solid #d0d0d0; border-radius: 6px; box-sizing: border-box; min-height: 80px; resize: vertical;" placeholder="Add your thoughts, analysis, or notes here..."></textarea>
-        </div>
-        
-        <div style="margin-bottom: 16px;">
-          <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Tags (comma-separated)</label>
-          <input type="text" id="new-tags" style="width: 100%; padding: 10px; font-size: 14px; border: 1px solid #d0d0d0; border-radius: 6px; box-sizing: border-box;" placeholder="e.g., research, important, follow-up">
-          ${noteTags.length > 0 ? `<div style="margin-top: 6px; font-size: 11px; color: #888;">Existing tags: ${noteTags.map(t => t.name).join(', ')}</div>` : ''}
-        </div>
-        
-        <div style="background: #f5f5f5; padding: 12px; border-radius: 6px; margin-bottom: 16px;">
-          <div style="font-size: 12px; font-weight: 600; color: #666; margin-bottom: 12px;">Citation Information (APA) — editable</div>
-          
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Author</label>
-            <input type="text" id="new-citation-author" value="${article.author ? stripHtml(article.author) : ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
-          </div>
-          
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Year</label>
-            <input type="text" id="new-citation-date" value="${article.publishedAt ? new Date(article.publishedAt).getFullYear() : ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
-          </div>
-          
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Title</label>
-            <input type="text" id="new-citation-title" value="${stripHtml(article.title)}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
-          </div>
-          
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">Source/Publication</label>
-            <input type="text" id="new-citation-source" value="${feed ? feed.title : ''}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
-          </div>
-          
-          <div>
-            <label style="display: block; font-size: 11px; color: #888; margin-bottom: 2px;">URL</label>
-            <input type="text" id="new-citation-url" value="${article.url}" style="width: 100%; padding: 8px; font-size: 13px; border: 1px solid #d0d0d0; border-radius: 4px; box-sizing: border-box;">
-          </div>
-        </div>
-        
-        <div style="display: flex; gap: 8px; justify-content: flex-end;">
-          <button id="add-note-cancel" style="padding: 10px 20px; font-size: 14px; cursor: pointer; background: #e8e8e8; border: none; border-radius: 6px;">
-            Cancel
-          </button>
-          <button id="add-note-save" style="padding: 10px 20px; font-size: 14px; cursor: pointer; background: #9c27b0; color: white; border: none; border-radius: 6px;">
-            Save Note
-          </button>
-        </div>
-      </div>
-    </div>
-  `;
-  
-  document.body.insertAdjacentHTML('beforeend', dialogHtml);
-  
-  const dialog = document.getElementById('add-note-dialog');
-  const cancelBtn = document.getElementById('add-note-cancel');
-  const saveBtn = document.getElementById('add-note-save');
-  
-  const closeDialog = () => dialog.remove();
-  
-  cancelBtn.addEventListener('click', closeDialog);
-  
-  saveBtn.addEventListener('click', async () => {
-    const highlightText = document.getElementById('new-highlight').value.trim();
-    const annotation = document.getElementById('new-annotation').value.trim();
-    
-    if (!highlightText && !annotation) {
-      alert('Please add a highlight or annotation');
-      return;
-    }
-    
-    const tagsInput = document.getElementById('new-tags').value;
-    const tags = tagsInput.split(',').map(t => t.trim()).filter(t => t);
-    
-    // Create any new tags
-    for (const tagName of tags) {
-      const existing = getAllNoteTags().find(t => t.name.toLowerCase() === tagName.toLowerCase());
-      if (!existing) {
-        await addNoteTag(tagName);
-      }
-    }
-    
-    const feed = getAllFeeds().find(f => f.id === article.feedId);
-    
-    await addNote({
-      articleId: article.id,
-      articleTitle: article.title,
-      articleUrl: article.url,
-      articleAuthor: document.getElementById('new-citation-author').value,
-      articlePublishedAt: article.publishedAt,
-      feedTitle: feed ? feed.title : '',
-      highlightedText: highlightText,
-      annotation: annotation,
-      tags: tags,
-      citationAuthor: document.getElementById('new-citation-author').value,
-      citationDate: document.getElementById('new-citation-date').value,
-      citationTitle: document.getElementById('new-citation-title').value,
-      citationSource: document.getElementById('new-citation-source').value,
-      citationUrl: document.getElementById('new-citation-url').value,
-    });
-    
-    closeDialog();
-    renderApp();
-  });
-  
-  dialog.addEventListener('click', (e) => {
-    if (e.target === dialog) closeDialog();
-  });
-}
+
 function attachArticleClickHandlers(articles) {
   document.querySelectorAll('.article-card').forEach(card => {
     card.addEventListener('click', async (e) => {
@@ -2292,35 +1819,35 @@ function attachArticleClickHandlers(articles) {
       // Cmd+click (Mac) or Ctrl+click (Windows) for multi-select
       if (e.metaKey || e.ctrlKey) {
         e.preventDefault();
-        if (selectedArticles.has(articleId)) {
-          selectedArticles.delete(articleId);
+        if (state.selectedArticles.has(articleId)) {
+          state.selectedArticles.delete(articleId);
         } else {
-          selectedArticles.add(articleId);
+          state.selectedArticles.add(articleId);
         }
         renderApp();
         return;
       }
       
       // Normal click - clear selection and open article
-      selectedArticles.clear();
+      state.selectedArticles.clear();
 
       // Preserve article list scroll position before the full re-render
       const articleList = document.getElementById('articles-list');
-      savedArticleListScroll = articleList ? articleList.scrollTop : 0;
+      state.savedArticleListScroll = articleList ? articleList.scrollTop : 0;
 
       await markArticleRead(articleId);
-      selectedArticle = article;
-      isLoadingArticle = true;
+      state.selectedArticle = article;
+      state.isLoadingArticle = true;
       renderApp(); // First render: layout + loading spinner
 
       const textContent = stripHtml(article.content || '');
       const isTruncated = textContent.includes('Read the full story') || textContent.includes('Continue reading') || textContent.includes('Read more') || textContent.length < 500;
       if (!article.content || isTruncated) {
         const result = await extractArticle(article.url);
-        if (result.success && result.content) selectedArticle = { ...article, content: result.content };
+        if (result.success && result.content) state.selectedArticle = { ...article, content: result.content };
       }
 
-      isLoadingArticle = false;
+      state.isLoadingArticle = false;
       // Targeted update: only the article content div changes; list scroll is untouched
       renderArticlePaneContent();
       saveReadingPosition();

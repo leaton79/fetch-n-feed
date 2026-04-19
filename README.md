@@ -1,5 +1,7 @@
 # Fetch N Feed
 
+**Notice:** This project was created with the assistance of GenAI tools. It should be carefully reviewed and independently inspected before being used in any production, security-sensitive, or otherwise critical context.
+
 A fast, privacy-first RSS reader for macOS, built with [Tauri 2](https://tauri.app) and vanilla JavaScript. No accounts, no cloud sync, no tracking — your feeds and reading history live entirely on your machine.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-lightgrey)
